@@ -1,0 +1,56 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Rules for usernames collection (public read, protected write)
+    match /usernames/{username} {
+      // Anyone can check if a username exists
+      allow read: if true;
+      
+      // Only authenticated users can claim a username
+      // and only if that username document doesn't exist yet
+      allow create: if request.auth != null && 
+                   !exists(/databases/$(database)/documents/usernames/$(username));
+                   
+      // No updates or deletes allowed
+      allow update, delete: if false;
+    }
+    
+    // Rules for the users collection
+    match /users/{userId} {
+      // Allow users to read their own full document
+      allow read: if request.auth != null && request.auth.uid == userId;
+      
+      // Allow creating user document on signup
+      allow create: if request.auth != null && request.auth.uid == userId;
+      
+      // Allow users to update only their own documents
+      allow update: if request.auth != null && request.auth.uid == userId;
+      
+      // Disallow deleting user documents
+      allow delete: if false;
+    }
+    
+    // Rules for leaderboard & chat profile reading
+    match /users/{userId} {
+      // Allow reading other users' public profile data
+      allow read: if request.auth != null;
+    }
+    
+    // Rules for messages
+    match /messages/{messageId} {
+      // Allow reading messages if authenticated
+      allow read: if request.auth != null;
+      
+      // Allow creating messages if authenticated and userId matches
+      allow create: if request.auth != null && 
+                   request.resource.data.userId == request.auth.uid;
+                   
+      // Disallow updating messages
+      allow update: if false;
+      
+      // Allow deleting only your own messages
+      allow delete: if request.auth != null && 
+                   resource.data.userId == request.auth.uid;
+    }
+  }
+} 

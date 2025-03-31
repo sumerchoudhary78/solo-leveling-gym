@@ -24,3 +24,9 @@ body {
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
 }
+
+/* Custom utility classes */
+.text-xxs {
+  font-size: 0.65rem;
+  line-height: 0.75rem;
+}

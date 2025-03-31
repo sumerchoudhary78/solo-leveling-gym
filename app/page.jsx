@@ -1,559 +1,939 @@
-'use client'; // Needs to be a client component for hooks
+// src/app/page.js
+'use client';
 
-import React, { useEffect, useState, useCallback, useRef } from 'react';
+import React, { useEffect, useState, useCallback, useRef, useMemo } from 'react';
 import { useRouter } from "next/navigation";
-import { useAuth } from '../context/AuthContext';
-import { signOut } from 'firebase/auth';
-import { 
-    doc, 
-    getDoc, 
-    updateDoc, 
-    onSnapshot,
-    collection,
-    addDoc,
-    serverTimestamp,
-    query,
-    orderBy,
-    limit,
-    getDocs,
-    setDoc
-} from "@firebase/firestore";
-import { auth, db } from '../lib/firebase/config';
 import Link from 'next/link';
+import { useAuth } from '../context/AuthContext'; // Adjust path if needed
+import { signOut } from 'firebase/auth';
+import {
+    doc,
+    updateDoc,
+    onSnapshot,
+    addDoc, // Keep addDoc for chat
+    serverTimestamp, // Keep for chat
+    collection, // Keep for chat
+    query, // Keep for chat
+    orderBy, // Keep for chat
+    limit, // Keep for chat
+    writeBatch, // Keep for quest completion
+    deleteField // Potentially useful for removing quest data on abandon
+} from "@firebase/firestore";
+import { auth,db } from '../lib/firebase/config';
+import { masterQuestDefinitions } from '../data/quests'; // Import quest definitions
 
-// Remove initialStats - data will come from Firestore
-// const initialStats = { ... };
+// Import Components
+import HunterRank from './components/dashboard/HunterRank';
+import StatCard from './components/dashboard/StatCard';
+import ProgressBar from './components/dashboard/ProgressBar';
+import StatItem from './components/dashboard/StatItem';
+import ChatBox from './components/chat/ChatBox';
+import WorkoutModal from './components/modals/WorkoutModal';
+import SystemMessage from './components/ui/SystemMessage';
+import SkillsModal from './components/modals/SkillsModal';
+import QuestLogModal from './components/modals/QuestLogModal';
+import ShadowArmyModal from './components/modals/ShadowArmyModal';
+import LevelUpModal from './components/modals/LevelUpModal';
 
-// --- Helper Components ---
-
-const StatCard = ({ title, value, children, className = "", onClick }) => (
-  <div 
-    className={`bg-gradient-to-br from-[#1f2a40] to-[#1a2335] p-4 rounded-lg shadow-lg flex flex-col items-center justify-center transition-all duration-300 hover:shadow-blue-500/30 hover:scale-[1.02] ${className} ${onClick ? 'cursor-pointer' : ''}`}
-    onClick={onClick}
-  >
-    <span className="text-sm uppercase text-gray-400 tracking-wider mb-1 font-semibold">{title}</span>
-    {value !== undefined && <span className="text-4xl font-bold text-white">{value}</span>}
-    {children}
-  </div>
-);
-
-const ProgressBar = ({ value, max, label, color = "bg-blue-500" }) => {
-  const percentage = max > 0 ? Math.min((value / max) * 100, 100) : 0; // Ensure percentage doesn't exceed 100
-  return (
-    <div className="w-full px-2">
-      <div className="flex justify-between text-xs text-gray-300 mb-1">
-        <span className="font-medium">{label}</span>
-        <span>{value}/{max}</span>
-      </div>
-      <div className="w-full bg-gray-700 rounded-full h-2.5 overflow-hidden shadow-inner">
-        <div className={`${color} h-2.5 rounded-full transition-all duration-500 ease-out`} style={{ width: `${percentage}%` }}></div>
-      </div>
-    </div>
-  );
+// Default structure for a new user's stats
+const defaultUserStats = {
+    level: 1,
+    exp: 0,
+    maxExp: 100,
+    hp: 100,
+    maxHp: 100,
+    strength: 5,
+    vitality: 5,
+    agility: 5,
+    statPoints: 0,
+    hunterName: 'New Hunter',
+    username: 'new_user',
+    userQuests: {}, // Quest progress stored here { questId: { status: '...', progress: ... } }
+    availableWorkouts: [ // Example default workouts
+        { id: 'w1', name: 'Goblin Den', difficulty: 'easy', exp: 50, duration: '15' },
+        { id: 'w2', name: 'Lizard Swamp', difficulty: 'medium', exp: 120, duration: '25' },
+    ],
+    equippedShadows: [], // Array of shadow IDs
+    unlockedSkills: [], // Array of skill IDs
+    // Add other fields as needed, e.g., inventory, lastLogin, etc.
 };
 
-const StatItem = ({ title, value, onIncrease, availablePoints }) => (
-  <div className="bg-gradient-to-br from-[#1f2a40] to-[#1a2335] p-4 rounded-lg shadow-lg flex flex-col items-center transition-all duration-300 hover:shadow-blue-500/30 hover:scale-[1.02]">
-    <span className="text-sm uppercase text-gray-400 tracking-wider mb-1 font-semibold">{title}</span>
-    <div className="flex items-center gap-3 mt-1">
-      <span className="text-4xl font-bold text-white">{value}</span>
-      <button 
-        onClick={onIncrease} 
-        disabled={availablePoints <= 0}
-        className={`bg-[#313f5b] hover:bg-[#4a5a7a] disabled:bg-gray-600 text-white font-bold py-1 px-3 rounded text-xl transition-colors shadow-md disabled:opacity-50 disabled:cursor-not-allowed disabled:shadow-none disabled:hover:bg-gray-600`}
-        aria-label={`Increase ${title}`}
-      >
-        +
-      </button>
-    </div>
-  </div>
-);
 
-// --- Workout Modal Component ---
-const WorkoutModal = ({ isOpen, onClose, workouts }) => {
-  if (!isOpen) return null;
+export default function DashboardPage() { // Renamed from Home
+    const { user, loading: authLoading } = useAuth();
+    const router = useRouter();
+    const [stats, setStats] = useState(null);
+    const [localLoading, setLocalLoading] = useState(true); // Separate loading state for Firestore data
+    const [isWorkoutModalOpen, setIsWorkoutModalOpen] = useState(false);
+    const [systemMessage, setSystemMessage] = useState(null);
+    const systemMessageTimer = useRef(null);
+    const [activeWorkout, setActiveWorkout] = useState(null);
+    const [isSkillsModalOpen, setIsSkillsModalOpen] = useState(false);
+    const [isQuestLogOpen, setIsQuestLogOpen] = useState(false);
+    const [isShadowArmyOpen, setIsShadowArmyOpen] = useState(false);
+    const [showLevelUp, setShowLevelUp] = useState(false);
+    const [levelUpDetails, setLevelUpDetails] = useState({ level: 0, rewards: { statPoints: 0, maxHp: 0, unlocks: [] } });
 
-  return (
-    <div className="fixed inset-0 bg-black bg-opacity-75 flex justify-center items-center z-50 p-4 backdrop-blur-sm">
-      <div className="bg-gradient-to-br from-[#1f2a40] to-[#101827] p-6 rounded-lg shadow-xl w-full max-w-md border border-blue-500/50">
-        <div className="flex justify-between items-center mb-4">
-          <h2 className="text-xl font-bold text-blue-300">Workout Log</h2>
-          <button onClick={onClose} className="text-gray-400 hover:text-white text-2xl">&times;</button>
-        </div>
-        <ul className="list-none space-y-2 max-h-60 overflow-y-auto pr-2">
-            {workouts && workouts.length > 0 ? (
-                workouts.map((workout, index) => (
-                <li key={workout.id || index} className="text-gray-300 bg-[#1a2335] p-2 rounded shadow-sm">
-                    {workout.name}
-                    {/* TODO: Add buttons/forms for logging sets/reps/weight */}
-                </li>
-                ))
-            ) : (
-                <li className="text-gray-500">No workouts available.</li>
-            )}
-        </ul>
-        {/* TODO: Add button to start/add new workout */} 
-      </div>
-    </div>
-  );
-};
+    // --- Local state for skills/shadows definitions (Could move to data/skills.js, data/shadows.js) ---
+    // TODO: The 'unlocked'/'equipped' status here is just for display structure.
+    // Real status should come from `stats.unlockedSkills` and `stats.equippedShadows`.
+    const [skillDefinitions, setSkillDefinitions] = useState([
+        { id: "s1", name: "Iron Body", category: "strength", description: "Increase maximum HP by 20%", effect: "Your maximum HP increases temporarily", cooldownDuration: 24, requirement: "Strength", requiredValue: 10 },
+        { id: "s2", name: "Sprint", category: "agility", description: "Increase workout efficiency by 15%", effect: "Gain 15% more EXP from next workout", cooldownDuration: 12, requirement: "Agility", requiredValue: 15 },
+        { id: "s3", name: "Endurance", category: "stamina", description: "Reduce recovery time slightly", effect: "Shorten cooldowns slightly", cooldownDuration: 0, requirement: "Vitality", requiredValue: 12 }, // Changed 'Vitality' to match stat
+        { id: "s4", name: "Arise", category: "special", description: "Chance to retry a failed workout", effect: "Next failed workout might not count", cooldownDuration: 72, requirement: "Level", requiredValue: 20 },
+    ]);
+    const [shadowDefinitions, setShadowDefinitions] = useState([
+        { id: "sh1", name: "Iron Muscle", icon: "💪", effect: "+5% Strength", unlockRequirement: "Reach Level 5" },
+        { id: "sh2", name: "Swift Steps", icon: "🏃", effect: "+5% Agility", unlockRequirement: "Complete 5 running workouts" }, // Changed name for clarity
+        { id: "sh3", name: "Tank's Resilience", icon: "🛡️", effect: "+5% Vitality", unlockRequirement: "Reach Vitality 15" },
+        { id: "sh4", name: "Heart of the Pack", icon: "❤️", effect: "+10% Max HP", unlockRequirement: "Complete 20 cardio workouts" },
+        { id: "sh5", name: "Alchemist's Touch", icon: "🧪", effect: "+15% effect from consumables", unlockRequirement: "Reach Level 15" },
+        { id: "sh6", name: "Tusk's Might", icon: "🐘", effect: "+5% lifting capacity", unlockRequirement: "Deadlift bodyweight" },
+        { id: "sh7", name: "Igris's Speed", icon: "⚔️", effect: "+3% all stats during workouts", unlockRequirement: "Reach S Rank (Level 30)" },
+        { id: "sh8", name: "Beru's Regeneration", icon: "🦇", effect: "Recover 2% HP after workout", unlockRequirement: "Complete 50 workouts" }
+    ]);
 
-// --- System Message Component ---
-const SystemMessage = ({ message, onAccept, onDecline }) => {
-    if (!message) return null;
-
-    return (
-        <div className="fixed bottom-4 right-4 bg-gradient-to-r from-blue-600 to-purple-700 text-white p-4 rounded-lg shadow-lg z-50 max-w-sm border border-blue-400/50">
-            <p className="font-semibold text-blue-200 mb-1">System Alert:</p>
-            <p className="mb-3 text-sm">{message}</p>
-            {onAccept && onDecline && (
-                <div className="flex justify-end gap-2">
-                    <button onClick={onDecline} className="px-3 py-1 bg-red-600 hover:bg-red-700 rounded text-xs font-medium transition-colors">Decline</button>
-                    <button onClick={onAccept} className="px-3 py-1 bg-green-600 hover:bg-green-700 rounded text-xs font-medium transition-colors">Accept</button>
-                </div>
-            )}
-        </div>
-    );
-};
-
-// --- Chat Component ---
-const ChatBox = ({ user, hunterName, currentUsername }) => {
-    const [messages, setMessages] = useState([]);
-    const [newMessage, setNewMessage] = useState("");
-    const [allUsernames, setAllUsernames] = useState([]); // Array of usernames for mentions
-    const [mentionSuggestions, setMentionSuggestions] = useState([]);
-    const [isMentioning, setIsMentioning] = useState(false);
-    const [mentionQuery, setMentionQuery] = useState("");
-    const messagesEndRef = useRef(null);
-    const inputRef = useRef(null); // Ref for the input field
-    const formRef = useRef(null); // Ref for the form to position dropdown
-
-    useEffect(() => {
-        messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-    }, [messages]);
-
-    useEffect(() => {
-        const fetchUsernames = async () => {
-            const usernamesRef = collection(db, "usernames");
-            try {
-                const querySnapshot = await getDocs(usernamesRef);
-                const usernames = [];
-                querySnapshot.forEach((doc) => {
-                    // Store just the username (which is the document ID)
-                    usernames.push(doc.id);
-                });
-                setAllUsernames(usernames);
-            } catch (error) {
-                console.error("Error fetching usernames for mentions:", error);
-            }
-        };
-
-        fetchUsernames();
+    // Helper to display system messages briefly
+    const showSystemMessage = useCallback((message, duration = 4000) => {
+        console.log("System Message:", message); // Log messages for debugging
+        setSystemMessage(message);
+        clearTimeout(systemMessageTimer.current); // Clear existing timer
+        systemMessageTimer.current = setTimeout(() => {
+            setSystemMessage(null);
+        }, duration);
     }, []); // No dependencies needed
 
+    // Clear timer on unmount
     useEffect(() => {
-        const messagesRef = collection(db, "messages");
-        const q = query(messagesRef, orderBy("timestamp", "asc"), limit(50));
-
-        const unsubscribe = onSnapshot(q, (querySnapshot) => {
-            const fetchedMessages = [];
-            querySnapshot.forEach((doc) => {
-                fetchedMessages.push({ id: doc.id, ...doc.data() });
-            });
-            setMessages(fetchedMessages);
-        });
-
-        return () => unsubscribe();
+        return () => clearTimeout(systemMessageTimer.current);
     }, []);
 
-    const renderMessageWithMentions = (text) => {
-        if (!text) return "";
-        // Regex to find @ followed by username characters (letters, numbers, _, -)
-        const mentionRegex = /@([a-zA-Z0-9_-]+)/g; 
-        const parts = text.split(mentionRegex);
+    // --- Firestore Listener for User Data ---
+    useEffect(() => {
+        if (authLoading) {
+            setLocalLoading(true); // Ensure loading state is true while auth is resolving
+            return;
+        }
+        if (!user) {
+            console.log("User not logged in, redirecting to login.");
+            router.push('/login'); // Redirect if not logged in after auth check
+            setLocalLoading(false);
+            return;
+        }
 
-        // Use the array of usernames directly
-        const knownUsernames = new Set(allUsernames);
+        console.log("User authenticated, setting up Firestore listener for UID:", user.uid);
+        setLocalLoading(true); // Start loading Firestore data
+        const userDocRef = doc(db, "users", user.uid);
 
-        return parts.map((part, index) => {
-            // Even indices are regular text, odd indices are potential mentions
-            if (index % 2 === 1 && knownUsernames.has(part)) {
-                // It's a valid mention
-                const isCurrentUserMentioned = part === currentUsername;
-                return (
-                    <span 
-                        key={index} 
-                        className={`font-semibold px-1 rounded ${isCurrentUserMentioned 
-                            ? 'text-yellow-300 bg-yellow-800/60 ring-1 ring-yellow-500' 
-                            : 'text-blue-400 bg-blue-900/50'}`}
-                    >
-                        @{part}
-                    </span>
-                );
+        const unsubscribe = onSnapshot(userDocRef, (docSnap) => {
+            if (docSnap.exists()) {
+                const userData = docSnap.data();
+                console.log("Received user data from Firestore:", userData);
+
+                // Merge fetched data with defaults to ensure all fields exist
+                const completeUserData = {
+                    ...defaultUserStats, // Start with defaults
+                    ...userData, // Overwrite with fetched data
+                    // Ensure nested objects also have defaults if missing in userData
+                    userQuests: userData.userQuests || {},
+                    availableWorkouts: userData.availableWorkouts || defaultUserStats.availableWorkouts,
+                    equippedShadows: userData.equippedShadows || [],
+                    unlockedSkills: userData.unlockedSkills || [],
+                    // Ensure core stats exist, falling back to default if needed (robustness)
+                    level: userData.level ?? defaultUserStats.level,
+                    exp: userData.exp ?? defaultUserStats.exp,
+                    maxExp: userData.maxExp ?? defaultUserStats.maxExp,
+                    hp: userData.hp ?? defaultUserStats.hp,
+                    maxHp: userData.maxHp ?? defaultUserStats.maxHp,
+                    strength: userData.strength ?? defaultUserStats.strength,
+                    vitality: userData.vitality ?? defaultUserStats.vitality,
+                    agility: userData.agility ?? defaultUserStats.agility,
+                    statPoints: userData.statPoints ?? defaultUserStats.statPoints,
+                    hunterName: userData.hunterName || `Hunter_${user.uid.substring(0, 4)}`, // Generate fallback name
+                    username: userData.username || user.email?.split('@')[0] || `user_${user.uid.substring(0, 4)}`, // Generate fallback username
+                };
+
+                 // Perform a one-time update if essential fields were missing from Firestore
+                 // This helps initialize new users or fix corrupted data
+                 const fieldsToInitialize = {};
+                 if (!userData.username) fieldsToInitialize.username = completeUserData.username;
+                 if (!userData.hunterName) fieldsToInitialize.hunterName = completeUserData.hunterName;
+                 if (userData.level === undefined) fieldsToInitialize.level = completeUserData.level;
+                 // Add more checks as needed
+
+                 if (Object.keys(fieldsToInitialize).length > 0) {
+                     console.warn("Initializing missing fields in Firestore:", fieldsToInitialize);
+                     updateDoc(userDocRef, fieldsToInitialize).catch(err => {
+                         console.error("Error initializing missing fields:", err);
+                     });
+                 }
+
+
+                // Check for level up based on previous stats vs current stats (if needed)
+                // This listener primarily just updates the state. Level up is handled by handleGainExp.
+
+                setStats(completeUserData);
+
             } else {
-                return part;
+                console.warn("User document not found for UID:", user.uid, "Attempting to create default document.");
+                // Create a default document if it doesn't exist (e.g., first login)
+                const initialStats = {
+                    ...defaultUserStats,
+                    hunterName: `Hunter_${user.uid.substring(0, 4)}`,
+                    username: user.email?.split('@')[0] || `user_${user.uid.substring(0, 4)}`,
+                    createdAt: serverTimestamp(), // Track creation time
+                };
+                // Use setDoc to create the document with the user's UID
+                setDoc(userDocRef, initialStats)
+                    .then(() => {
+                        console.log("Default user document created successfully.");
+                        setStats(initialStats); // Set local state immediately
+                    })
+                    .catch((error) => {
+                        console.error("Error creating default user document:", error);
+                        showSystemMessage("Error setting up your profile. Please refresh.", 10000);
+                        setStats(null); // Indicate an error state
+                    });
             }
+            setLocalLoading(false); // Firestore data loaded (or creation attempted)
+        }, (error) => {
+            console.error("Error fetching user document:", error);
+            showSystemMessage("Error loading your profile data. Please try refreshing.", 10000);
+            setStats(null); // Set stats to null on error
+            setLocalLoading(false);
         });
-    };
 
-    const handleSendMessage = async (e) => {
-        e.preventDefault();
-        if (!user || !newMessage.trim() || !hunterName) return;
+        // Cleanup listener on unmount or when user/auth changes
+        return () => {
+            console.log("Unsubscribing from user data listener.");
+            unsubscribe();
+        };
 
-        const messagesRef = collection(db, "messages");
+    }, [user, authLoading, router, showSystemMessage]); // Add showSystemMessage dependency
+
+
+    // --- Merge Quest Definitions with User Progress ---
+    const mergedQuests = useMemo(() => {
+        if (!stats?.userQuests) return []; // Return empty if stats or userQuests aren't loaded
+
+        return masterQuestDefinitions.map(def => {
+            const userQuestData = stats.userQuests[def.id];
+            // Determine status: 'completed', 'active', or 'available'
+            let status = 'available';
+            let progress = 0;
+            if (userQuestData) {
+                status = userQuestData.status || 'available'; // Default to available if status is missing
+                progress = userQuestData.progress || 0;
+            }
+
+            // Ensure completed quests stay completed, active stay active unless explicitly changed
+            return {
+                ...def, // Spread the master definition first
+                status: status,
+                progress: progress,
+            };
+        }).sort((a, b) => { // Sort: Active > Available > Completed
+            const statusOrder = { active: 1, available: 2, completed: 3 };
+            return (statusOrder[a.status] || 4) - (statusOrder[b.status] || 4);
+        });
+    }, [stats?.userQuests]); // Depend only on userQuests part of stats
+
+
+    // --- Level Up Logic ---
+    // This function calculates the result of gaining EXP, including potential level ups.
+    // It's designed to be pure calculation based on provided current stats.
+    const calculateLevelUp = useCallback((currentStats, gainedExp) => {
+        // Use provided stats, falling back to defaults for safety
+        const level = currentStats?.level ?? 1;
+        const exp = currentStats?.exp ?? 0;
+        let currentMaxExp = currentStats?.maxExp ?? 100;
+        const statPoints = currentStats?.statPoints ?? 0;
+        const maxHp = currentStats?.maxHp ?? 100;
+
+        // Prevent division by zero or infinite loops if maxExp is invalid
+        if (currentMaxExp <= 0) {
+            console.error("Max EXP is zero or negative, resetting to 100 for calculation.");
+            currentMaxExp = 100;
+        }
+
+        let newLevel = level;
+        let currentExp = exp + gainedExp;
+        let newMaxExp = currentMaxExp; // Start with current maxExp
+        let accumulatedStatPoints = 0;
+        let accumulatedMaxHp = 0;
+        const accumulatedUnlocks = [];
+        let didLevelUp = false;
+
+        // Loop for multi-level ups
+        while (currentExp >= newMaxExp) {
+            didLevelUp = true;
+            currentExp -= newMaxExp; // Carry over remaining exp
+            newLevel += 1;
+
+            // --- Define Base rewards per level ---
+            const baseRewards = { statPoints: 2, maxHp: 10 };
+
+            // --- Define Level-specific rewards/unlocks ---
+            const specialRewards = {
+                5: { unlocks: ["New Skill: Endurance Training"] }, // Placeholder unlock text
+                10: { statPoints: 1, unlocks: ["Rank D Unlocked", "New Gates Available"] }, // Added 1 extra point = 3 total
+                15: { unlocks: ["New Shadow: Alchemist's Touch"] }, // Use defined shadow name
+                20: { statPoints: 3, unlocks: ["Rank B Unlocked", "Special Weekly Quests"] }, // Added 3 extra points = 5 total
+                30: { statPoints: 8, unlocks: ["Rank S Unlocked", "New Shadow: Igris's Speed"] }, // Added 8 extra points = 10 total
+                40: { unlocks: ["National Level Rank"] },
+                50: { unlocks: ["Special Authority Rank"] },
+            };
+
+            let currentLevelRewards = { ...baseRewards, unlocks: [] };
+
+            // Apply special rewards for the NEW level reached
+            if (specialRewards[newLevel]) {
+                currentLevelRewards.statPoints += specialRewards[newLevel].statPoints || 0;
+                currentLevelRewards.maxHp += specialRewards[newLevel].maxHp || 0; // Although not used in example
+                currentLevelRewards.unlocks.push(...(specialRewards[newLevel].unlocks || []));
+            }
+
+            accumulatedStatPoints += currentLevelRewards.statPoints;
+            accumulatedMaxHp += currentLevelRewards.maxHp;
+            accumulatedUnlocks.push(...currentLevelRewards.unlocks);
+
+            // Calculate maxExp for the *next* level threshold (based on the level just achieved)
+            // Example scaling: Increase by 20% + 50 flat, rounded down
+            newMaxExp = Math.floor(newMaxExp * 1.2) + 50;
+
+            // Safety break for extreme exp gain / potential infinite loop
+             if (newLevel > level + 20) {
+                  console.warn("Level up calculation exceeded 20 levels, breaking loop.");
+                  break;
+             }
+        }
+
+        const finalRewards = didLevelUp ? {
+            statPoints: accumulatedStatPoints,
+            maxHp: accumulatedMaxHp,
+            unlocks: accumulatedUnlocks
+        } : null;
+
+        // Trigger the visual modal *if* a level up occurred
+        if (didLevelUp) {
+            console.log(`Level Up Triggered: Level ${newLevel}, Rewards:`, finalRewards);
+            setLevelUpDetails({ level: newLevel, rewards: finalRewards });
+            setShowLevelUp(true); // Controls the LevelUpModal visibility
+        }
+
+        // Return all necessary values needed to update Firestore
+        return {
+            level: newLevel,
+            exp: currentExp, // Remaining EXP after level ups
+            maxExp: newMaxExp, // Max EXP required for the *next* level
+            statPoints: statPoints + accumulatedStatPoints, // Original points + gained points
+            maxHp: maxHp + accumulatedMaxHp, // Original HP + gained HP
+            didLevelUp, // Flag indicating if a level up happened
+            // We don't return rewards here, they are handled by setLevelUpDetails
+        };
+    }, []); // No external dependencies needed for this calculation logic
+
+    // --- Gain EXP Handler (Updates Firestore) ---
+    const handleGainExp = useCallback(async (amount) => {
+        if (!user || !stats || amount <= 0) {
+            console.warn("Cannot gain EXP. Conditions not met:", { userExists: !!user, statsLoaded: !!stats, amount });
+            return;
+        }
+
+        const userDocRef = doc(db, "users", user.uid);
+
         try {
-            await addDoc(messagesRef, {
-                text: newMessage.trim(),
-                userId: user.uid,
-                hunterName: hunterName,
-                username: currentUsername, // Store username so messages can show who sent them
-                timestamp: serverTimestamp()
-            });
-            setNewMessage("");
+            // Calculate potential level up results based on the *current* stats state
+            // This is optimistic but avoids needing a read before write in most cases.
+            // The onSnapshot listener will eventually sync the state anyway.
+            const levelUpResult = calculateLevelUp(stats, amount);
+
+            // Prepare the data to update in Firestore
+            const updates = {
+                exp: levelUpResult.exp,
+                // Only update fields that actually changed to minimize writes
+                ...(levelUpResult.level !== stats.level && { level: levelUpResult.level }),
+                ...(levelUpResult.maxExp !== stats.maxExp && { maxExp: levelUpResult.maxExp }),
+                ...(levelUpResult.statPoints !== stats.statPoints && { statPoints: levelUpResult.statPoints }),
+                ...(levelUpResult.maxHp !== stats.maxHp && { maxHp: levelUpResult.maxHp }),
+                lastActivity: serverTimestamp() // Optionally update last activity timestamp
+            };
+
+            // Only perform update if there are changes besides timestamp
+             if (Object.keys(updates).length > 1) {
+                 await updateDoc(userDocRef, updates);
+                 console.log(`Gained ${amount} EXP. Firestore updated with changes:`, updates);
+                  showSystemMessage(`Gained ${amount} experience points!`, 3000);
+             } else {
+                 console.log(`Gained ${amount} EXP, but no stat changes required update.`);
+                 // Still show message even if only EXP changed but no level up etc.
+                 showSystemMessage(`Gained ${amount} experience points!`, 3000);
+                 // Update just the exp if no other changes triggered
+                 if (levelUpResult.exp !== stats.exp) {
+                    await updateDoc(userDocRef, { exp: levelUpResult.exp, lastActivity: serverTimestamp() });
+                 }
+             }
+
+            // The level up modal is shown via calculateLevelUp setting state, not directly here.
+            // The 'stats' state will be updated by the onSnapshot listener reflecting Firestore changes.
+
         } catch (error) {
-            console.error("Error sending message: ", error);
+            console.error("Error updating experience and level:", error);
+            showSystemMessage("Error processing experience gain.");
         }
-        // Reset mention state after sending
-        setIsMentioning(false);
-        setMentionSuggestions([]);
-        setMentionQuery("");
-    };
+    }, [user, stats, calculateLevelUp, showSystemMessage]); // Dependencies
 
-    // Handle input change for mention detection
-    const handleInputChange = (e) => {
-        const value = e.target.value;
-        setNewMessage(value);
 
-        const cursorPos = e.target.selectionStart;
-        const textBeforeCursor = value.substring(0, cursorPos);
-        
-        const mentionMatch = textBeforeCursor.match(/@([a-zA-Z0-9_-]*)$/);
+    // --- Quest Actions (Update Firestore) ---
 
-        if (mentionMatch) {
-            setIsMentioning(true);
-            const query = mentionMatch[1].toLowerCase();
-            setMentionQuery(query);
-            
-            const suggestions = allUsernames
-                .filter(username => username.toLowerCase().startsWith(query))
-                .map(username => ({ username })) // Convert to object format for compatibility
-                .slice(0, 5); // Limit suggestions
-                
-            setMentionSuggestions(suggestions);
+    const handleAcceptQuest = useCallback(async (questId) => {
+        if (!user || !stats) return;
+        const userDocRef = doc(db, "users", user.uid);
+        const questDefinition = masterQuestDefinitions.find(q => q.id === questId);
+        if (!questDefinition) {
+            console.error("Cannot accept quest: Definition not found for ID", questId);
+            return;
+        }
+
+        const currentQuestStatus = stats.userQuests?.[questId]?.status;
+        if (currentQuestStatus === 'active' || currentQuestStatus === 'completed') {
+            showSystemMessage("Quest is already active or completed.");
+            return;
+        }
+
+        try {
+            // Update Firestore using dot notation for nested field
+            await updateDoc(userDocRef, {
+                [`userQuests.${questId}`]: { // Set the quest object
+                    status: 'active',
+                    progress: 0, // Reset progress on accept
+                    acceptedAt: serverTimestamp() // Optional: track accept time
+                }
+            });
+            console.log(`Quest ${questId} status updated to active in Firestore.`);
+            showSystemMessage(`Accepted: ${questDefinition.title}`);
+            setIsQuestLogOpen(false); // Close modal on success
+        } catch (error) {
+            console.error("Error accepting quest:", error);
+            showSystemMessage(`Error accepting quest: ${questDefinition.title}`);
+        }
+    }, [user, stats, showSystemMessage]);
+
+    const handleAbandonQuest = useCallback(async (questId) => {
+        if (!user || !stats) return;
+        const userDocRef = doc(db, "users", user.uid);
+        const questDefinition = masterQuestDefinitions.find(q => q.id === questId);
+        if (!questDefinition) {
+            console.error("Cannot abandon quest: Definition not found for ID", questId);
+            return;
+        }
+
+        if (stats.userQuests?.[questId]?.status !== 'active') {
+            showSystemMessage("Can only abandon active quests.");
+            return;
+        }
+
+        try {
+             // Option 1: Reset to 'available' state
+            await updateDoc(userDocRef, {
+                [`userQuests.${questId}`]: {
+                    status: 'available', // Set back to available
+                    progress: 0
+                    // Optionally keep other data or remove it
+                }
+            });
+            // Option 2: Remove the quest entry completely using deleteField()
+            // await updateDoc(userDocRef, {
+            //     [`userQuests.${questId}`]: deleteField()
+            // });
+
+            console.log(`Quest ${questId} status updated to available (or removed) in Firestore.`);
+            showSystemMessage(`Abandoned: ${questDefinition.title}`);
+        } catch (error) {
+            console.error("Error abandoning quest:", error);
+            showSystemMessage(`Error abandoning quest: ${questDefinition.title}`);
+        }
+    }, [user, stats, showSystemMessage]);
+
+    const handleCompleteQuest = useCallback(async (questId) => {
+        if (!user || !stats) return;
+
+        const userDocRef = doc(db, "users", user.uid);
+        const questDefinition = masterQuestDefinitions.find(q => q.id === questId);
+        if (!questDefinition) {
+            console.error("Quest definition not found for ID:", questId);
+            showSystemMessage("Error: Quest data not found.");
+            return;
+        }
+
+        const currentQuestState = stats.userQuests?.[questId];
+        if (currentQuestState?.status !== 'active') {
+            showSystemMessage("Quest must be active to complete.");
+            console.warn(`Attempted to complete non-active quest: ${questId}, status: ${currentQuestState?.status}`);
+            return;
+        }
+
+        // --- Objective Checking ---
+        // TODO: Implement real objective checking based on questDefinition and stats
+        // For now, we assume the button is only enabled if completable (handled in QuestLogModal)
+        // if (!canCompleteQuest(questDefinition, stats)) { // Pass stats if needed
+        //     showSystemMessage(`Objectives not yet met for: ${questDefinition.title}`);
+        //     return;
+        // }
+        // --- End Objective Checking ---
+
+        try {
+            const batch = writeBatch(db); // Use a batch for atomic updates
+
+            // 1. Mark quest as completed in user's quest data
+            batch.update(userDocRef, {
+                [`userQuests.${questId}`]: {
+                    ...currentQuestState, // Keep existing data like progress if needed
+                    status: 'completed',
+                    progress: 100, // Ensure progress is marked 100%
+                    completedAt: serverTimestamp() // Optional: track completion time
+                }
+            });
+
+            let rewardMessage = `Completed: ${questDefinition.title}!`;
+            let totalExpGained = 0;
+
+            // 2. Apply direct rewards (Stat Points, Items etc.) to the user document
+            if (questDefinition.rewardPoints) {
+                // IMPORTANT: Read the *current* statPoints from the local 'stats' state
+                // batch.update works based on the server state, but for incrementing,
+                // we need the client's best guess at the current value.
+                // Firestore increments are safer if available and applicable.
+                batch.update(userDocRef, {
+                    statPoints: (stats.statPoints || 0) + questDefinition.rewardPoints
+                });
+                rewardMessage += ` +${questDefinition.rewardPoints} Stat Pts.`;
+            }
+
+            // TODO: Add item rewards logic here
+            // Example: Add item ID to an inventory array
+            // if (questDefinition.rewardItem) {
+            //     batch.update(userDocRef, {
+            //         inventory: arrayUnion(questDefinition.rewardItem) // Assumes inventory is an array
+            //     });
+            //     rewardMessage += ` Item: ${questDefinition.rewardItem}.`;
+            // }
+
+            // Prepare EXP gain (will be applied *after* batch commit)
+            if (questDefinition.rewardExp) {
+                totalExpGained = questDefinition.rewardExp;
+                // Message formatting happens below after potential level up message
+            }
+
+            // Commit the batch update for quest status and direct rewards
+            await batch.commit();
+            console.log(`Quest ${questId} completed, status and direct rewards updated via batch.`);
+
+            // 3. Apply EXP gain *after* the batch commit
+            // This ensures the level up calculation happens based on the stats *after* points were added (if any)
+            // The onSnapshot listener *should* update the local 'stats' quickly,
+            // but calling handleGainExp ensures the calculation uses the latest known values.
+            if (totalExpGained > 0) {
+                await handleGainExp(totalExpGained); // This handles EXP update and potential level up modal
+                // Note: handleGainExp already shows an EXP gain message.
+                // We modify the rewardMessage to avoid doubling it.
+                rewardMessage += ` (+${totalExpGained} EXP processed)`; // Modify message
+            }
+
+            showSystemMessage(rewardMessage, 6000); // Show combined message
+
+        } catch (error) {
+            console.error("Error completing quest:", error);
+            showSystemMessage(`Error completing quest: ${questDefinition.title}`);
+        }
+    }, [user, stats, handleGainExp, showSystemMessage]);
+
+
+    // --- Other Handlers ---
+
+    const handleLogout = useCallback(async () => {
+        try {
+            await signOut(auth);
+            console.log("User logged out successfully");
+            setStats(null); // Clear local stats
+            // The AuthContext listener should handle the redirect via the main useEffect hook
+            // No need for router.push('/login') here if AuthContext handles it.
+        } catch (error) {
+            console.error("Logout Error:", error);
+            showSystemMessage("Logout failed. Please try again.");
+        }
+    }, [showSystemMessage]); // Added showSystemMessage
+
+    const handleIncreaseStat = useCallback(async (statName) => {
+        if (!user || !stats || (stats.statPoints || 0) <= 0) {
+            showSystemMessage(stats?.statPoints > 0 ? "Cannot increase stat." : "No stat points available!");
+            return;
+        }
+        if (!['strength', 'vitality', 'agility'].includes(statName)) {
+             console.error("Invalid stat name:", statName);
+             return;
+        }
+
+        const userDocRef = doc(db, "users", user.uid);
+        const currentStatValue = stats[statName] || 0;
+        const newStatValue = currentStatValue + 1;
+        const newAvailablePoints = stats.statPoints - 1;
+
+        try {
+            await updateDoc(userDocRef, {
+                [statName]: newStatValue,
+                statPoints: newAvailablePoints,
+            });
+            // No need to set local state, onSnapshot will update it
+            console.log(`Stat ${statName} updated to ${newStatValue} in Firestore.`);
+            // Capitalize stat name for message
+            const capitalizedStat = statName.charAt(0).toUpperCase() + statName.slice(1);
+            showSystemMessage(`${capitalizedStat} increased to ${newStatValue}! (-1 Stat Point)`);
+        } catch (error) {
+            console.error("Error updating stat:", error);
+            showSystemMessage(`Failed to increase ${statName}.`);
+        }
+    }, [user, stats, showSystemMessage]);
+
+
+    const handleStartWorkout = useCallback((workout) => {
+        // TODO: Implement actual workout tracking logic
+        // - Persist activeWorkout in Firestore?
+        // - Start timer? Use Cloud Function for completion?
+        setActiveWorkout(workout); // Set local state for UI feedback
+        setIsWorkoutModalOpen(false);
+        showSystemMessage(`Entering ${workout.name || 'Random'} gate... Good luck!`, 5000);
+
+        // --- Example: Simulate workout completion ---
+        const workoutDuration = workout.isRandom ? (Math.random() * 10000 + 5000) : 10000; // Random 5-15s, Fixed 10s
+        const expGain = workout.exp || (workout.isRandom ? Math.floor(Math.random() * 150) + 50 : 100); // Use defined or random exp
+
+        const workoutTimer = setTimeout(() => {
+            // Check if this is still the active workout before granting rewards
+            // This prevents issues if the user starts another workout quickly
+            // Note: This simple check might not be robust enough for complex scenarios.
+            // Comparing by name/id is safer.
+            setActiveWorkout(currentActiveWorkout => {
+                if (currentActiveWorkout?.name === workout.name) {
+                    showSystemMessage(`${workout.name || 'Random'} gate cleared!`, 5000);
+                    handleGainExp(expGain); // Grant EXP using the handler
+                    // TODO: Update workout history, track completions for quests/unlocks in Firestore
+                    return null; // Clear active workout
+                }
+                return currentActiveWorkout; // No change if not the expected workout
+            });
+
+        }, workoutDuration);
+
+        // Cleanup function for the timeout if component unmounts or workout changes
+        // (Could store timer ref if more complex cancellation is needed)
+        // return () => clearTimeout(workoutTimer); // Need to manage this if required
+
+    }, [showSystemMessage, handleGainExp]); // Dependencies
+
+
+    const handleActivateSkill = useCallback((skill) => {
+        // TODO: Implement persistent skill activation & cooldowns in Firestore
+        // - Check cooldown timestamp in Firestore user data
+        // - Apply skill effect (update stats temporarily, set flags, etc. in Firestore)
+        // - Record activation timestamp in Firestore for cooldown tracking
+
+        showSystemMessage(`Activated skill: ${skill.name}. ${skill.effect}`, 6000);
+        setIsSkillsModalOpen(false);
+
+        // --- Local Cooldown Simulation (Remove when using Firestore timestamps) ---
+        if (skill.cooldownDuration > 0) {
+             setSkillDefinitions(prevSkills => prevSkills.map(s =>
+                s.id === skill.id ? { ...s, cooldown: skill.cooldownDuration } : s // Set local cooldown display
+             ));
+            // Simulate cooldown ending (for local display only)
+             setTimeout(() => {
+                setSkillDefinitions(prevSkills => prevSkills.map(s =>
+                    s.id === skill.id ? { ...s, cooldown: 0 } : s
+                ));
+             }, skill.cooldownDuration * 1000 * 60 * 60); // Convert hours to ms (won't persist page refresh)
+        }
+        // --- End Local Simulation ---
+
+    }, [showSystemMessage]);
+
+
+    const handleEquipShadow = useCallback(async (shadowId, equip) => {
+        if (!user || !stats) return;
+
+        const userDocRef = doc(db, "users", user.uid);
+        const maxEquipped = 3; // Define max allowed (could be dynamic based on level/rank)
+        const currentEquipped = stats.equippedShadows || [];
+        const targetShadowDef = shadowDefinitions.find(s => s.id === shadowId);
+        if (!targetShadowDef) {
+             console.error("Shadow definition not found:", shadowId);
+             return;
+        }
+
+
+        let updatedEquippedShadows = [...currentEquipped];
+
+        if (equip) {
+            // Check if already equipped
+            if (currentEquipped.includes(shadowId)) {
+                showSystemMessage(`${targetShadowDef.name} is already equipped.`);
+                return;
+            }
+            // Check if max limit reached
+            if (currentEquipped.length >= maxEquipped) {
+                showSystemMessage(`Cannot equip more than ${maxEquipped} shadows.`);
+                return;
+            }
+            // Add to equipped list
+            updatedEquippedShadows.push(shadowId);
         } else {
-            setIsMentioning(false);
-            setMentionSuggestions([]);
+            // Remove from equipped list
+            updatedEquippedShadows = currentEquipped.filter(id => id !== shadowId);
         }
-    };
 
-    // Handle selecting a mention suggestion
-    const handleSelectMention = (username) => {
-        const currentMessage = newMessage;
-        const cursorPos = inputRef.current.selectionStart;
-        const textBeforeCursor = currentMessage.substring(0, cursorPos);
-        const textAfterCursor = currentMessage.substring(cursorPos);
+        try {
+            await updateDoc(userDocRef, {
+                equippedShadows: updatedEquippedShadows
+            });
+            // onSnapshot will update the local 'stats' state
+             showSystemMessage(equip ? `Equipped: ${targetShadowDef.name}` : `Unequipped: ${targetShadowDef.name}`);
+             console.log("Updated equipped shadows in Firestore:", updatedEquippedShadows);
+        } catch (error) {
+            console.error("Error updating equipped shadows:", error);
+            showSystemMessage(`Failed to ${equip ? 'equip' : 'unequip'} ${targetShadowDef.name}.`);
+        }
 
-        // Replace the partial mention query with the selected username + a space
-        const updatedTextBefore = textBeforeCursor.replace(/@([a-zA-Z0-9_-]*)$/, `@${username} `);
+    }, [user, stats, showSystemMessage, shadowDefinitions]);
 
-        setNewMessage(updatedTextBefore + textAfterCursor);
 
-        // Reset mention state and focus input
-        setIsMentioning(false);
-        setMentionSuggestions([]);
-        inputRef.current.focus();
+    // --- Processed data for modals ---
+    // Combine skill definitions with user's unlock status
+     const userSkills = useMemo(() => {
+        if (!stats) return [];
+        // TODO: Integrate cooldown status from Firestore if implemented
+        // const now = Date.now();
+        return skillDefinitions.map(def => ({
+            ...def,
+            // unlocked: (stats.unlockedSkills || []).includes(def.id), // Check if user has unlocked it
+            // cooldownEndTime: stats.activeCooldowns?.[def.id] || 0, // Get cooldown end time from stats
+            // isOnCooldown: (stats.activeCooldowns?.[def.id] || 0) > now,
+            cooldown: def.cooldown || 0 // Using local simulation cooldown for now
+        }));
+    }, [stats, skillDefinitions]);
 
-        // Optional: Move cursor after the inserted mention
-        const newCursorPos = updatedTextBefore.length;
-        setTimeout(() => inputRef.current.setSelectionRange(newCursorPos, newCursorPos), 0);
-    };
+    // Combine shadow definitions with user's unlock/equip status
+    const userShadows = useMemo(() => {
+        if (!stats) return [];
+         // TODO: Determine 'unlocked' status based on requirements and user stats/progress
+         // For now, assuming unlock requirement string is just for display
+         // and 'unlocked' status needs separate logic or Firestore field
+        return shadowDefinitions.map(def => ({
+            ...def,
+            unlocked: true, // Placeholder: Assume all defined shadows are potentially unlockable
+            // unlocked: checkShadowUnlock(def, stats), // Replace with actual unlock check logic
+            equipped: (stats.equippedShadows || []).includes(def.id) // Check if equipped
+        }));
+    }, [stats, shadowDefinitions]);
 
+
+    // --- Loading and Error States ---
+    if (authLoading || localLoading) {
+        return (
+            <div className="flex justify-center items-center min-h-screen bg-[#101827]">
+                <div className="flex flex-col items-center">
+                    <svg className="animate-spin h-10 w-10 text-blue-400 mb-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                    </svg>
+                    <p className="text-white text-xl">Loading System Interface...</p>
+                </div>
+            </div>
+        );
+    }
+
+    // If user is logged in but stats failed to load (e.g., Firestore error, but doc *should* be created now)
+    if (user && !stats) {
+        return (
+            <div className="flex flex-col justify-center items-center min-h-screen bg-[#101827] text-center p-4">
+                <h2 className="text-2xl text-red-400 font-semibold mb-4">Error Loading Profile</h2>
+                <p className="text-gray-400 mb-6 max-w-md">
+                    We encountered an issue loading your Hunter profile. This might be temporary.
+                    Please try refreshing the page. If the problem persists, contact support.
+                </p>
+                <div className="flex gap-4">
+                    <button
+                        onClick={() => window.location.reload()}
+                        className="bg-blue-600 hover:bg-blue-700 text-white font-semibold rounded-md text-sm px-4 py-2 transition-all shadow-md hover:shadow-lg"
+                    >
+                        Refresh Page
+                    </button>
+                    <button
+                        onClick={handleLogout}
+                        className="bg-gradient-to-r from-red-600 to-red-800 hover:from-red-700 hover:to-red-900 text-white font-semibold rounded-md text-sm px-4 py-2 transition-all shadow-md hover:shadow-lg"
+                    >
+                        Logout
+                    </button>
+                </div>
+                 {/* Display system message if available */}
+                 <SystemMessage message={systemMessage} />
+            </div>
+        );
+    }
+
+    // If user somehow becomes null after loading checks (should be caught by redirect)
+    if (!user) {
+        console.warn("DashboardPage rendering null because user is null after loading checks.");
+        return null; // Or redirect again just in case
+    }
+
+    // --- Render Main Dashboard ---
     return (
-        <div className="bg-[#1f2a40] rounded-lg shadow-lg flex flex-col h-[calc(100vh-200px)] max-h-[500px] md:col-span-3 lg:col-span-1 lg:row-span-2">
-            <h3 className="text-lg font-semibold text-blue-300 p-3 border-b border-gray-700">Global Chat</h3>
-            <div className="flex-grow overflow-y-auto p-3 space-y-3">
-                {messages.map(msg => {
-                    // Highlight the entire message div if user is mentioned
-                    const mentionsCurrentUser = msg.text?.includes(`@${currentUsername}`);
-                    return (
-                        <div 
-                            key={msg.id} 
-                            className={`flex ${msg.userId === user.uid ? 'justify-end' : 'justify-start'} ${mentionsCurrentUser ? 'bg-yellow-900/30 rounded-md p-1 -m-1' : ''}`}
-                        >
-                            <div className={`p-2 rounded-lg max-w-[75%] ${msg.userId === user.uid ? 'bg-blue-700 text-white' : 'bg-gray-600 text-gray-200'}`}>
-                                <p className="text-xs font-semibold mb-0.5 opacity-80">
-                                    {msg.hunterName || 'Hunter'} 
-                                    {msg.username && <span className="opacity-60 text-xxs ml-1">@{msg.username}</span>}
-                                </p>
-                                <p className="text-sm break-words">{renderMessageWithMentions(msg.text)}</p>
+        <>
+            <div className="min-h-screen bg-[#101827] text-gray-100 font-sans p-4 sm:p-8">
+                {/* Header */}
+                <header className="flex justify-between items-center mb-6 sm:mb-10 flex-wrap gap-y-2">
+                    <h1 className="text-xl sm:text-2xl font-bold text-blue-300 tracking-wide">
+                        {stats.hunterName || 'Hunter'}'s Dashboard
+                    </h1>
+                    <div className="flex items-center gap-2 sm:gap-3 flex-wrap">
+                        <button onClick={() => setIsShadowArmyOpen(true)} className="text-xs sm:text-sm text-purple-400 hover:text-purple-300 transition-colors font-medium px-2 py-1 hover:bg-purple-900/30 rounded">Shadows</button>
+                        <button onClick={() => setIsQuestLogOpen(true)} className="text-xs sm:text-sm text-green-400 hover:text-green-300 transition-colors font-medium px-2 py-1 hover:bg-green-900/30 rounded">Quests</button>
+                        <button onClick={() => setIsSkillsModalOpen(true)} className="text-xs sm:text-sm text-yellow-400 hover:text-yellow-300 transition-colors font-medium px-2 py-1 hover:bg-yellow-900/30 rounded">Skills</button>
+                        <Link href="/leaderboard" className="text-xs sm:text-sm text-blue-400 hover:text-blue-300 transition-colors font-medium px-2 py-1 hover:bg-blue-900/30 rounded">Rankings</Link>
+                        <span className="text-sm text-gray-500 hidden sm:inline mx-1">|</span>
+                        <span className="text-xs sm:text-sm text-gray-300" title={user.email || 'No email'}>@{stats.username || '...'}</span>
+                        <button onClick={handleLogout} className="bg-gradient-to-r from-red-600 to-red-800 hover:from-red-700 hover:to-red-900 text-white font-semibold rounded-md text-xs sm:text-sm px-3 py-1.5 transition-all shadow-md hover:shadow-lg">
+                            Logout
+                        </button>
+                    </div>
+                </header>
+
+                {/* Main Grid */}
+                <main className="grid grid-cols-1 lg:grid-cols-3 gap-4 sm:gap-6">
+                    {/* Left/Center Column (Stats & Workouts) */}
+                    <div className="lg:col-span-2 grid grid-cols-1 md:grid-cols-2 gap-4 sm:gap-6">
+                        {/* Level & Status */}
+                        <div className="md:col-span-1 grid grid-rows-2 gap-4 sm:gap-6">
+                            <StatCard title="Level" value={stats.level}>
+                                <HunterRank level={stats.level} />
+                            </StatCard>
+                            <StatCard title="Status" className="justify-around py-6">
+                                <ProgressBar label="HP" value={stats.hp} max={stats.maxHp} color="bg-red-500" />
+                                <ProgressBar label="EXP" value={stats.exp} max={stats.maxExp} color="bg-yellow-500" />
+                            </StatCard>
+                        </div>
+
+                        {/* Strength & Stat Points */}
+                        <div className="md:col-span-1 grid grid-rows-2 gap-4 sm:gap-6">
+                            <StatItem
+                                title="Strength"
+                                value={stats.strength}
+                                onIncrease={() => handleIncreaseStat('strength')}
+                                availablePoints={stats.statPoints}
+                            />
+                            <StatCard title="Stat Points" value={stats.statPoints} />
+                        </div>
+
+                        {/* Vitality, Agility & Workouts */}
+                         <div className="md:col-span-2 grid grid-cols-1 md:grid-cols-3 gap-4 sm:gap-6">
+                             {/* Use grid-cols-2 for stats on smaller screens within this block */}
+                             <div className="grid grid-cols-2 md:col-span-2 gap-4 sm:gap-6">
+                                <StatItem
+                                    title="Vitality"
+                                    value={stats.vitality}
+                                    onIncrease={() => handleIncreaseStat('vitality')}
+                                    availablePoints={stats.statPoints}
+                                />
+                                <StatItem
+                                    title="Agility"
+                                    value={stats.agility}
+                                    onIncrease={() => handleIncreaseStat('agility')}
+                                    availablePoints={stats.statPoints}
+                                />
+                             </div>
+                             {/* Gate Button */}
+                            <div className="md:col-span-1">
+                                <StatCard
+                                    title="Gates"
+                                    className="items-center justify-center h-full text-center cursor-pointer group"
+                                    onClick={() => setIsWorkoutModalOpen(true)}
+                                >
+                                    <svg xmlns="http://www.w3.org/2000/svg" className="h-10 w-10 text-blue-400 group-hover:text-blue-300 transition-colors duration-200 mt-2" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                                        <path strokeLinecap="round" strokeLinejoin="round" d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6" />
+                                    </svg>
+                                    <p className="text-gray-400 mt-2 text-sm group-hover:text-white transition-colors duration-200">Enter Gate</p>
+                                    {activeWorkout && (
+                                        <p className="text-xs text-blue-300 mt-1 animate-pulse">
+                                            Clearing: {activeWorkout.name}
+                                        </p>
+                                    )}
+                                </StatCard>
                             </div>
                         </div>
-                    );
-                })}
-                <div ref={messagesEndRef} />
-            </div>
-            
-            <form ref={formRef} onSubmit={handleSendMessage} className="p-3 border-t border-gray-700 flex gap-2 relative"> { /* Added relative positioning */}
-                {/* Mention Suggestions Popup (improved positioning) */}
-                {isMentioning && mentionSuggestions.length > 0 && (
-                    <div className="absolute bottom-[100%] left-3 right-3 mb-1 bg-gray-800 border border-blue-500 rounded-md shadow-lg z-10 max-h-40 overflow-y-auto">
-                        <div className="text-xs text-gray-400 px-3 py-1 border-b border-gray-700">Select a user to mention</div>
-                        <ul>
-                            {mentionSuggestions.map((u) => (
-                                <li 
-                                    key={u.username} 
-                                    onClick={() => handleSelectMention(u.username)}
-                                    className="px-3 py-2 text-sm text-gray-200 hover:bg-blue-700 cursor-pointer"
-                                >
-                                    @{u.username}
-                                </li>
-                            ))}
-                        </ul>
                     </div>
-                )}
-                
-                {/* Fallback: Show when we're mentioning but no suggestions */}
-                {isMentioning && mentionSuggestions.length === 0 && allUsernames.length > 0 && (
-                    <div className="absolute bottom-[100%] left-3 right-3 mb-1 bg-gray-800 border border-blue-500 rounded-md shadow-lg z-10">
-                        <div className="text-xs text-gray-300 px-3 py-2">
-                            No usernames match "{mentionQuery}". Keep typing...
-                        </div>
-                    </div>
-                )}
-                
-                <input 
-                    ref={inputRef} // Assign ref
-                    type="text"
-                    value={newMessage}
-                    onChange={handleInputChange} // Use dedicated handler
-                    placeholder="Enter message... (@username to mention)" 
-                    className="flex-grow p-2 bg-gray-700 border border-gray-600 rounded-md text-white placeholder-gray-400 focus:ring-blue-500 focus:border-blue-500 text-sm"
-                    autoComplete="off" // Disable browser autocomplete
-                />
-                <button 
-                    type="submit"
-                    disabled={!newMessage.trim()}
-                    className="bg-blue-600 hover:bg-blue-700 disabled:bg-gray-500 text-white font-medium rounded-md text-sm px-4 py-2 transition-colors disabled:cursor-not-allowed"
-                >
-                    Send
-                </button>
-            </form>
-        </div>
-    );
-};
 
-// --- Main Home Component ---
-
-export default function Home() {
-  const { user, loading: authLoading } = useAuth();
-  const router = useRouter();
-  const [stats, setStats] = useState(null);
-  const [localLoading, setLocalLoading] = useState(true);
-  const [isWorkoutModalOpen, setIsWorkoutModalOpen] = useState(false);
-  const [systemMessage, setSystemMessage] = useState(null);
-  const [currentQuest, setCurrentQuest] = useState(null);
-
-  useEffect(() => {
-    if (!authLoading && !user) {
-      router.push('/login');
-      return;
-    }
-
-    let unsubscribe = () => {};
-
-    if (!authLoading && user) {
-      setLocalLoading(true);
-      const userDocRef = doc(db, "users", user.uid);
-
-      unsubscribe = onSnapshot(userDocRef, (docSnap) => {
-        if (docSnap.exists()) {
-          console.log("User data:", docSnap.data());
-          setStats(docSnap.data());
-        } else {
-          console.error("User document not found!");
-        }
-        setLocalLoading(false);
-      }, (error) => {
-        console.error("Error fetching user document:", error);
-        setLocalLoading(false);
-      });
-    }
-
-    return () => unsubscribe();
-
-  }, [user, authLoading, router]);
-
-  useEffect(() => {
-    if (user && stats && !currentQuest) {
-      const quests = [
-        { id: 'd1', text: 'Daily Quest: Perform 50 Push-ups.', type: 'daily', rewardExp: 50 },
-        { id: 'w1', text: 'Weekly Challenge: Deadlift your bodyweight.', type: 'weekly', rewardPoints: 1 },
-        { id: 'd2', text: 'Daily Quest: Run 1 mile.', type: 'daily', rewardExp: 75 },
-      ];
-      const newQuest = quests[Math.floor(Math.random() * quests.length)];
-      
-      const timer = setTimeout(() => {
-          setSystemMessage(`New ${newQuest.type} quest available: ${newQuest.text}`);
-          setCurrentQuest(newQuest);
-      }, 4000);
-
-      return () => clearTimeout(timer);
-    }
-  }, [user, stats, currentQuest]);
-
-  const handleAcceptQuest = () => {
-    console.log("Quest Accepted:", currentQuest);
-    setSystemMessage(null);
-  };
-
-  const handleDeclineQuest = () => {
-    console.log("Quest Declined:", currentQuest);
-    setSystemMessage(null);
-    setCurrentQuest(null);
-  };
-
-  const handleLogout = async () => {
-    try {
-      await signOut(auth);
-      console.log("User logged out successfully");
-    } catch (error) {
-      console.error("Logout Error:", error);
-    }
-  };
-
-  const handleIncreaseStat = useCallback(async (statName) => {
-    if (!user || !stats || stats.statPoints <= 0) {
-        console.log("Cannot increase stat: No user, stats not loaded, or no points available.");
-        return;
-    }
-
-    const userDocRef = doc(db, "users", user.uid);
-    const newStatValue = stats[statName] + 1;
-    const newAvailablePoints = stats.statPoints - 1;
-
-    try {
-        await updateDoc(userDocRef, {
-            [statName]: newStatValue,
-            statPoints: newAvailablePoints,
-        });
-        console.log(`Stat ${statName} updated in Firestore.`);
-    } catch (error) {
-        console.error("Error updating stat:", error);
-    }
-  }, [user, stats]);
-
-  if (authLoading || localLoading) {
-    return (
-      <div className="flex justify-center items-center min-h-screen bg-[#101827]">
-        <p className="text-white text-xl">Loading System Interface...</p>
-      </div>
-    );
-  }
-
-  if (user && stats) {
-    return (
-      <>
-        <div className="min-h-screen bg-[#101827] text-gray-100 font-[family-name:var(--font-geist-sans)] p-4 sm:p-8">
-          <header className="flex justify-between items-center mb-6 sm:mb-10">
-            <h1 className="text-xl sm:text-2xl font-bold text-blue-300 tracking-wide">
-                {stats.hunterName || 'Hunter'}'s Dashboard 
-            </h1>
-            <div className="flex items-center gap-3">
-              <Link href="/leaderboard" className="text-sm text-blue-400 hover:text-blue-300 transition-colors font-medium">
-                  Rankings
-              </Link>
-              <span className="text-sm text-gray-400 hidden sm:inline">|</span>
-              <span className="text-sm text-gray-300 hidden sm:inline" title={user.email}>{user.email.split('@')[0]}</span>
-              <button
-                onClick={handleLogout}
-                className="bg-gradient-to-r from-red-600 to-red-800 hover:from-red-700 hover:to-red-900 text-white font-semibold rounded-md text-sm px-3 py-1.5 transition-all shadow-md hover:shadow-lg"
-              >
-                Logout
-              </button>
-            </div>
-          </header>
-
-          <main className="grid grid-cols-1 lg:grid-cols-3 gap-4 sm:gap-6">
-            <div className="lg:col-span-2 grid grid-cols-1 md:grid-cols-2 gap-4 sm:gap-6">
-                <div className="md:col-span-1 grid grid-rows-2 gap-4 sm:gap-6">
-                    <StatCard title="Level" value={stats.level} />
-                    <StatCard title="Status" className="justify-around py-6">
-                        <ProgressBar label="HP" value={stats.hp} max={stats.maxHp} color="bg-red-500" />
-                        <ProgressBar label="EXP" value={stats.exp} max={stats.maxExp} color="bg-yellow-500" />
-                    </StatCard>
-                </div>
-
-                <div className="md:col-span-1 grid grid-rows-2 gap-4 sm:gap-6">
-                    <StatItem 
-                        title="Strength" 
-                        value={stats.strength} 
-                        onIncrease={() => handleIncreaseStat('strength')} 
-                        availablePoints={stats.statPoints}
-                    /> 
-                    <StatCard title="Stat Points" value={stats.statPoints} />
-                </div>
-
-                <div className="md:col-span-2 grid grid-cols-1 md:grid-cols-3 gap-4 sm:gap-6">
-                    <div className="grid grid-cols-2 md:col-span-2 gap-4 sm:gap-6">
-                         <StatItem 
-                            title="Vitality" 
-                            value={stats.vitality} 
-                            onIncrease={() => handleIncreaseStat('vitality')} 
-                            availablePoints={stats.statPoints}
-                        />
-                        <StatItem 
-                            title="Agility" 
-                            value={stats.agility} 
-                            onIncrease={() => handleIncreaseStat('agility')}
-                            availablePoints={stats.statPoints}
-                        />
-                    </div>
-                    <div className="md:col-span-1">
-                         <StatCard 
-                            title="Workouts" 
-                            className="items-start justify-start h-full"
-                            onClick={() => setIsWorkoutModalOpen(true)}
-                         >
-                            <ul className="list-none text-left w-full mt-2 text-sm space-y-1">
-                            {stats.workouts && stats.workouts.length > 0 ? (
-                                stats.workouts.slice(0, 4).map((workout, index) => (
-                                    <li key={workout.id || index} className="text-gray-300 truncate">- {workout.name}</li>
-                                ))
-                            ) : (
-                                <li className="text-gray-500">No workouts assigned.</li>
-                            )}
-                            {stats.workouts && stats.workouts.length > 4 && (
-                                <li className="text-gray-500 text-xs mt-1">... and more</li>
-                            )}
-                            </ul>
-                        </StatCard>
-                    </div>
-                </div>
+                    {/* Right Column (Chat) */}
+                    <ChatBox
+                        user={user}
+                        hunterName={stats.hunterName}
+                        currentUsername={stats.username} // Pass username fetched from stats
+                    />
+                </main>
             </div>
 
-            <ChatBox 
-                user={user} 
-                hunterName={stats.hunterName} 
-                currentUsername={stats.username} // Pass current user's username
-            /> 
+             {/* Test EXP Button - Only in Development */}
+             {process.env.NODE_ENV === 'development' && (
+                <div className="fixed bottom-4 left-4 z-[100]">
+                    <button
+                        // Use a smaller, fixed amount for easier testing, or percentage as before
+                        onClick={() => handleGainExp(100)} // Test with fixed 100 EXP
+                        // onClick={() => handleGainExp(stats?.maxExp ? Math.floor(stats.maxExp * 0.8) : 100)}
+                        className="px-3 py-2 bg-gradient-to-r from-yellow-500 to-orange-500 hover:from-yellow-600 hover:to-orange-600 text-white rounded shadow-lg text-xs font-semibold"
+                        title={`Gain 100 EXP (Test)`}
+                        // title={`Gain ${stats?.maxExp ? Math.floor(stats.maxExp * 0.8) : 100} EXP (Test)`}
+                    >
+                        +EXP (Test)
+                    </button>
+                </div>
+             )}
 
-          </main>
-        </div>
-
-        <WorkoutModal 
-            isOpen={isWorkoutModalOpen} 
-            onClose={() => setIsWorkoutModalOpen(false)} 
-            workouts={stats.workouts || []} 
-        />
-        <SystemMessage 
-            message={systemMessage} 
-            onAccept={currentQuest ? handleAcceptQuest : undefined} 
-            onDecline={currentQuest ? handleDeclineQuest : undefined} 
-        />
-      </>
+            {/* Modals */}
+            <WorkoutModal
+                isOpen={isWorkoutModalOpen}
+                onClose={() => setIsWorkoutModalOpen(false)}
+                workouts={stats.availableWorkouts || []} // Pass workouts from stats
+                onStartWorkout={handleStartWorkout}
+            />
+            <SystemMessage message={systemMessage} />
+            <SkillsModal
+                isOpen={isSkillsModalOpen}
+                onClose={() => setIsSkillsModalOpen(false)}
+                skills={userSkills} // Pass processed skills
+                onActivateSkill={handleActivateSkill}
+                stats={stats} // Pass current stats for requirement checks
+            />
+            <QuestLogModal
+                isOpen={isQuestLogOpen}
+                onClose={() => setIsQuestLogOpen(false)}
+                quests={mergedQuests} // Pass the combined list
+                onAcceptQuest={handleAcceptQuest}
+                onAbandonQuest={handleAbandonQuest}
+                onCompleteQuest={handleCompleteQuest}
+            />
+            <ShadowArmyModal
+                isOpen={isShadowArmyOpen}
+                onClose={() => setIsShadowArmyOpen(false)}
+                shadows={userShadows} // Pass processed shadows
+                onEquipShadow={handleEquipShadow}
+                maxEquipped={3} // Define max equipped count (could be dynamic from stats)
+            />
+            <LevelUpModal
+                isOpen={showLevelUp}
+                onClose={() => setShowLevelUp(false)}
+                newLevel={levelUpDetails.level}
+                rewards={levelUpDetails.rewards}
+            />
+        </>
     );
-  }
-
-  return null;
 }
-

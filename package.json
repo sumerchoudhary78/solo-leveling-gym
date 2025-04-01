@@ -10,11 +10,18 @@
   },
   "dependencies": {
     "@firebase/firestore": "^4.7.10",
+    "@genkit-ai/ai": "^1.4.0",
+    "@genkit-ai/core": "^1.4.0",
+    "@genkit-ai/flow": "^0.5.17",
+    "@genkit-ai/googleai": "^1.4.0",
+    "@google/generative-ai": "^0.24.0",
     "firebase": "^11.5.0",
+    "genkit": "^1.4.0",
     "next": "15.2.4",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "three": "^0.175.0",
+    "zod": "^3.24.2",
     "zustand": "^5.0.3"
   },
   "devDependencies": {
@@ -22,6 +29,7 @@
     "@tailwindcss/postcss": "^4",
     "eslint": "^9",
     "eslint-config-next": "15.2.4",
+    "genkit-cli": "^1.4.0",
     "tailwindcss": "^4"
   }
 }

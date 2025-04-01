@@ -21,6 +21,7 @@ const ChatBox = ({ user, hunterName, currentUsername }) => {
     const [mentionSuggestions, setMentionSuggestions] = useState([]);
     const [isMentioning, setIsMentioning] = useState(false);
     const [mentionQuery, setMentionQuery] = useState("");
+    const [isLoading, setIsLoading] = useState(false);
     const messagesEndRef = useRef(null);
     const inputRef = useRef(null); // Ref for the input field
     const formRef = useRef(null); // Ref for the form to position dropdown
@@ -32,12 +33,9 @@ const ChatBox = ({ user, hunterName, currentUsername }) => {
     // Fetch all usernames once
     useEffect(() => {
         const fetchUsernames = async () => {
-            // Assuming a 'users' collection where each doc has a 'username' field
-            // Or a dedicated 'usernames' collection as in the original code
-            const usersRef = collection(db, "users"); // Adjust if using a different collection like 'usernames'
+            const usersRef = collection(db, "users");
             try {
                 const querySnapshot = await getDocs(usersRef);
-                // Extract username, filter out potential undefined/nulls and the current user
                 const usernames = querySnapshot.docs
                     .map(doc => doc.data()?.username)
                     .filter(username => username && username !== currentUsername);
@@ -47,10 +45,10 @@ const ChatBox = ({ user, hunterName, currentUsername }) => {
                 console.error("Error fetching usernames for mentions:", error);
             }
         };
-        if (currentUsername) { // Only fetch if we know the current username to exclude
+        if (currentUsername) {
              fetchUsernames();
         }
-    }, [currentUsername]); // Refetch if username changes (unlikely but good practice)
+    }, [currentUsername]);
 
     // Listen for new messages
     useEffect(() => {
@@ -72,52 +70,87 @@ const ChatBox = ({ user, hunterName, currentUsername }) => {
 
     const renderMessageWithMentions = useCallback((text) => {
         if (!text) return "";
-        // Improved regex to handle mentions at the end of the string or followed by punctuation
         const mentionRegex = /@([a-zA-Z0-9_-]+)(\b|$)/g;
-        // Use a Set for efficient lookup
         const knownUsernames = new Set(allUsernames);
         if (currentUsername) {
-             knownUsernames.add(currentUsername); // Include self for highlighting check
+             knownUsernames.add(currentUsername);
         }
+        // Add 'gemini' as a special username for AI
+        knownUsernames.add('gemini');
 
-
-        // Split using a lookahead to keep the delimiter (@username)
         const parts = text.split(mentionRegex);
 
         return parts.map((part, index) => {
-          // Matched usernames appear at indices 1, 4, 7, ...
           const isPotentialMention = index % 3 === 1;
 
-          if (isPotentialMention && knownUsernames.has(part)) {
-            const isCurrentUserMentioned = part === currentUsername;
-            return (
-              <span
-                key={index}
-                className={`font-semibold px-1 rounded ${
-                  isCurrentUserMentioned
-                    ? 'text-yellow-300 bg-yellow-800/60 ring-1 ring-yellow-500'
-                    : 'text-blue-400 bg-blue-900/50'
-                }`}
-              >
-                @{part}
-              </span>
-            );
+          if (isPotentialMention) {
+            if (part === 'gemini') {
+              // Special styling for Gemini AI mentions
+              return (
+                <span
+                  key={index}
+                  className="font-semibold px-1 rounded text-green-400 bg-green-900/50 ring-1 ring-green-500"
+                >
+                  @{part}
+                </span>
+              );
+            } else if (knownUsernames.has(part)) {
+              const isCurrentUserMentioned = part === currentUsername;
+              return (
+                <span
+                  key={index}
+                  className={`font-semibold px-1 rounded ${
+                    isCurrentUserMentioned
+                      ? 'text-yellow-300 bg-yellow-800/60 ring-1 ring-yellow-500'
+                      : 'text-blue-400 bg-blue-900/50'
+                  }`}
+                >
+                  @{part}
+                </span>
+              );
+            }
           }
-           // Handle the non-mention parts (indices 0, 3, 6, ...)
-           // and potential non-username strings caught by regex group (indices 2, 5, 8, ...)
-           else if (index % 3 === 0) {
-               return part; // Regular text part
-           } else {
-                // This part contains the character AFTER the mention (like space or punctuation)
-                // Or it could be the end-of-word/string boundary captured - often empty
-                // If it's not empty, it might be a non-username string preceded by @
-                const prefix = index > 1 && parts[index - 1] === undefined ? "@" : ""; // Check if previous was undefined mention
-                return prefix + part;
-           }
+          
+          if (index % 3 === 0) {
+              return part; // Regular text part
+          } else {
+              const prefix = index > 1 && parts[index - 1] === undefined ? "@" : "";
+              return prefix + part;
+          }
         });
+    }, [allUsernames, currentUsername]);
 
+    // Function to extract queries for Gemini AI
+    const extractGeminiQuery = (text) => {
+        // This regex matches @gemini followed by text until the end of string or next @ mention
+        const geminiRegex = /@gemini\s+([^@]+)(?=@|$)/;
+        const match = text.match(geminiRegex);
+        return match ? match[1].trim() : null;
+    };
 
-      }, [allUsernames, currentUsername]);
+    // Function to query Gemini AI via our API endpoint
+    const queryGeminiAI = async (query, username) => {
+        try {
+            // Call our API endpoint including the username
+            const response = await fetch('/api/gemini', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({ query, username }),
+            });
+            
+            if (!response.ok) {
+                throw new Error(`API error: ${response.status}`);
+            }
+            
+            const data = await response.json();
+            return data.response;
+        } catch (error) {
+            console.error("Error querying Gemini AI:", error);
+            return "I'm having trouble processing your request. Please try again later.";
+        }
+    };
 
     const handleSendMessage = async (e) => {
         e.preventDefault();
@@ -126,23 +159,58 @@ const ChatBox = ({ user, hunterName, currentUsername }) => {
             return;
         }
 
-
+        const messageText = newMessage.trim();
         const messagesRef = collection(db, "messages");
+        
         try {
+            // Send the user's message
             await addDoc(messagesRef, {
-                text: newMessage.trim(),
+                text: messageText,
                 userId: user.uid,
-                hunterName: hunterName || 'Hunter', // Fallback name
-                username: currentUsername, // Should be available here
+                hunterName: hunterName || 'Hunter',
+                username: currentUsername,
                 timestamp: serverTimestamp()
             });
+            
+            // Check if the message contains a @gemini mention with query
+            if (messageText.includes('@gemini')) {
+                const query = extractGeminiQuery(messageText);
+                if (query) {
+                    setIsLoading(true);
+                    // Add a "typing" message
+                    const typingDocRef = await addDoc(messagesRef, {
+                        text: "Gemini is thinking...",
+                        userId: 'gemini-ai-system',
+                        hunterName: 'Gemini AI',
+                        username: 'gemini',
+                        isTyping: true,
+                        timestamp: serverTimestamp()
+                    });
+                    
+                    // Get response from Gemini AI via our API
+                    // Pass the current username so Gemini can tag the user back
+                    const aiResponse = await queryGeminiAI(query, currentUsername);
+                    
+                    // Send the actual AI response
+                    await addDoc(messagesRef, {
+                        text: aiResponse,
+                        userId: 'gemini-ai-system',
+                        hunterName: 'Gemini AI',
+                        username: 'gemini',
+                        timestamp: serverTimestamp()
+                    });
+                    
+                    setIsLoading(false);
+                }
+            }
+            
             setNewMessage("");
             setIsMentioning(false);
             setMentionSuggestions([]);
             setMentionQuery("");
         } catch (error) {
             console.error("Error sending message: ", error);
-            // Optionally show user feedback here
+            setIsLoading(false);
         }
     };
 
@@ -154,16 +222,28 @@ const ChatBox = ({ user, hunterName, currentUsername }) => {
         const textBeforeCursor = value.substring(0, cursorPos);
         const mentionMatch = textBeforeCursor.match(/@([a-zA-Z0-9_-]*)$/);
 
-        if (mentionMatch && allUsernames.length > 0) {
+        if (mentionMatch) {
             setIsMentioning(true);
             const query = mentionMatch[1].toLowerCase();
             setMentionQuery(query);
 
-            // Filter suggestions (already excludes current user during fetch)
-            const suggestions = allUsernames
-                .filter(username => username.toLowerCase().startsWith(query))
-                .slice(0, 5);
-
+            // Include Gemini AI as a suggestion option
+            let suggestions = [];
+            
+            // Always include Gemini if the query is empty or matches 'gemini'
+            if (query === '' || 'gemini'.startsWith(query)) {
+                suggestions.push('gemini');
+            }
+            
+            // Add matching user mentions
+            if (allUsernames.length > 0) {
+                const userSuggestions = allUsernames
+                    .filter(username => username.toLowerCase().startsWith(query))
+                    .slice(0, 4); // Limit to 4 user suggestions
+                
+                suggestions = [...suggestions, ...userSuggestions];
+            }
+            
             setMentionSuggestions(suggestions);
         } else {
             setIsMentioning(false);
@@ -173,22 +253,20 @@ const ChatBox = ({ user, hunterName, currentUsername }) => {
 
     const handleSelectMention = (username) => {
         const currentMessage = newMessage;
-        // Use ref to get current cursor position accurately
         const cursorPos = inputRef.current.selectionStart;
         const textBeforeCursor = currentMessage.substring(0, cursorPos);
         const textAfterCursor = currentMessage.substring(cursorPos);
 
-        // Replace the partial mention (@ Somet...) with the full username and a space
+        // Replace the partial mention with the full username and a space
         const updatedTextBefore = textBeforeCursor.replace(/@([a-zA-Z0-9_-]*)$/, `@${username} `);
-
         setNewMessage(updatedTextBefore + textAfterCursor);
+        
         setIsMentioning(false);
         setMentionSuggestions([]);
 
         // Refocus and set cursor position after the inserted mention
         inputRef.current.focus();
         const newCursorPos = updatedTextBefore.length;
-        // Use setTimeout to ensure the state update has rendered
         setTimeout(() => inputRef.current.setSelectionRange(newCursorPos, newCursorPos), 0);
     };
 
@@ -197,20 +275,26 @@ const ChatBox = ({ user, hunterName, currentUsername }) => {
             <h3 className="text-lg font-semibold text-blue-300 p-3 border-b border-gray-700">Global Chat</h3>
             <div className="flex-grow overflow-y-auto p-3 space-y-3 scrollbar-thin scrollbar-thumb-gray-600 scrollbar-track-gray-800">
                 {messages.map(msg => {
-                    // Safe check for text and currentUsername before includes
                     const mentionsCurrentUser = msg.text && currentUsername && msg.text.includes(`@${currentUsername}`);
                     const isOwnMessage = msg.userId === user?.uid;
+                    const isGeminiMessage = msg.userId === 'gemini-ai-system';
+                    const isTypingMessage = msg.isTyping === true;
 
                     return (
                         <div
                             key={msg.id}
                             className={`flex ${isOwnMessage ? 'justify-end' : 'justify-start'} ${mentionsCurrentUser ? 'bg-yellow-900/30 rounded-md p-1 -m-1 ring-1 ring-yellow-600/50' : ''}`}
                         >
-                            <div className={`p-2 rounded-lg max-w-[75%] shadow-md ${isOwnMessage ? 'bg-blue-700 text-white' : 'bg-gray-600 text-gray-200'}`}>
-                                {!isOwnMessage && (
+                            <div className={`p-2 rounded-lg max-w-[75%] shadow-md ${
+                                isGeminiMessage 
+                                    ? 'bg-green-800 text-white' 
+                                    : isOwnMessage 
+                                        ? 'bg-blue-700 text-white' 
+                                        : 'bg-gray-600 text-gray-200'
+                            } ${isTypingMessage ? 'opacity-60' : ''}`}>
+                                {(!isOwnMessage || isGeminiMessage) && (
                                     <p className="text-xs font-semibold mb-0.5 opacity-80">
                                         {msg.hunterName || 'Hunter'}
-                                        {/* Ensure msg.username exists before displaying */}
                                         {msg.username && <span className="opacity-60 text-xxs ml-1">@{msg.username}</span>}
                                     </p>
                                 )}
@@ -226,15 +310,25 @@ const ChatBox = ({ user, hunterName, currentUsername }) => {
                 {/* Mention Suggestions Popup */}
                 {isMentioning && mentionSuggestions.length > 0 && (
                     <div className="absolute bottom-[100%] left-3 right-3 mb-1 bg-gray-800 border border-blue-500 rounded-md shadow-lg z-10 max-h-40 overflow-y-auto scrollbar-thin scrollbar-thumb-gray-600 scrollbar-track-gray-800">
-                        <div className="text-xs text-gray-400 px-3 py-1 border-b border-gray-700">Mention User</div>
+                        <div className="text-xs text-gray-400 px-3 py-1 border-b border-gray-700">Mention User or AI</div>
                         <ul>
                             {mentionSuggestions.map((username) => (
                                 <li
                                     key={username}
                                     onClick={() => handleSelectMention(username)}
-                                    className="px-3 py-2 text-sm text-gray-200 hover:bg-blue-700 cursor-pointer"
+                                    className={`px-3 py-2 text-sm ${
+                                        username === 'gemini' 
+                                            ? 'text-green-300 hover:bg-green-800' 
+                                            : 'text-gray-200 hover:bg-blue-700'
+                                    } cursor-pointer flex items-center`}
                                 >
+                                    {username === 'gemini' && (
+                                        <svg className="w-4 h-4 mr-1" viewBox="0 0 24 24" fill="currentColor">
+                                            <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.54c-.26-.81-1-1.39-1.9-1.39h-1v-3c0-.55-.45-1-1-1H8v-2h2c.55 0 1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.06 5 7.41 0 2.08-.8 3.97-2.1 5.39z" />
+                                        </svg>
+                                    )}
                                     @{username}
+                                    {username === 'gemini' && <span className="ml-1 text-xs opacity-70">(AI assistant)</span>}
                                 </li>
                             ))}
                         </ul>
@@ -242,7 +336,7 @@ const ChatBox = ({ user, hunterName, currentUsername }) => {
                 )}
 
                 {/* No Matches Found */}
-                {isMentioning && mentionQuery && mentionSuggestions.length === 0 && allUsernames.length > 0 && (
+                {isMentioning && mentionQuery && mentionSuggestions.length === 0 && (
                     <div className="absolute bottom-[100%] left-3 right-3 mb-1 bg-gray-800 border border-blue-500 rounded-md shadow-lg z-10">
                         <div className="text-xs text-gray-300 px-3 py-2">
                             No users match "@{mentionQuery}".
@@ -255,17 +349,25 @@ const ChatBox = ({ user, hunterName, currentUsername }) => {
                     type="text"
                     value={newMessage}
                     onChange={handleInputChange}
-                    placeholder={user ? "Enter message... (@username to mention)" : "Login to chat"}
+                    placeholder={user ? "Enter message... (@username or @gemini to chat with AI)" : "Login to chat"}
                     className="flex-grow p-2 bg-gray-700 border border-gray-600 rounded-md text-white placeholder-gray-400 focus:ring-blue-500 focus:border-blue-500 text-sm disabled:opacity-50"
                     autoComplete="off"
-                    disabled={!user} // Disable if not logged in
+                    disabled={!user || isLoading}
                 />
                 <button
                     type="submit"
-                    disabled={!newMessage.trim() || !user} // Disable if no text or not logged in
+                    disabled={!newMessage.trim() || !user || isLoading}
                     className="bg-blue-600 hover:bg-blue-700 disabled:bg-gray-500 text-white font-medium rounded-md text-sm px-4 py-2 transition-colors disabled:cursor-not-allowed"
                 >
-                    Send
+                    {isLoading ? (
+                        <span className="flex items-center">
+                            <svg className="animate-spin -ml-1 mr-2 h-4 w-4 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                            </svg>
+                            Wait
+                        </span>
+                    ) : "Send"}
                 </button>
             </form>
         </div>

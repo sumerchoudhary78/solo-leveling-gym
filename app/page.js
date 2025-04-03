@@ -17,10 +17,12 @@ import {
     orderBy, // Keep for chat
     limit, // Keep for chat
     writeBatch, // Keep for quest completion
-    deleteField // Potentially useful for removing quest data on abandon
+    deleteField, // Potentially useful for removing quest data on abandon
+    getDoc
 } from "@firebase/firestore";
 import { auth,db } from '../lib/firebase/config';
 import { masterQuestDefinitions } from '../data/quests'; // Import quest definitions
+import WearableIntegration from '../lib/wearables';
 
 // Import Components
 import HunterRank from './components/dashboard/HunterRank';
@@ -34,6 +36,7 @@ import SkillsModal from './components/modals/SkillsModal';
 import QuestLogModal from './components/modals/QuestLogModal';
 import ShadowArmyModal from './components/modals/ShadowArmyModal';
 import LevelUpModal from './components/modals/LevelUpModal';
+import WearableModal from './components/modals/WearableModal';
 
 // Default structure for a new user's stats
 const defaultUserStats = {
@@ -55,6 +58,24 @@ const defaultUserStats = {
     ],
     equippedShadows: [], // Array of shadow IDs
     unlockedSkills: [], // Array of skill IDs
+    // Wearable device settings
+    wearableSettings: {
+        platform: null,
+        isConnected: false,
+        lastSyncTime: null,
+        settings: {
+            trackHeartRate: true,
+            trackCalories: true,
+            trackSteps: true,
+            trackDistance: true,
+            trackDuration: true,
+            autoDetectActivity: true,
+            notifyOnMilestones: true,
+            syncFrequency: 'realtime'
+        }
+    },
+    // Workout history
+    workoutHistory: [],
     // Add other fields as needed, e.g., inventory, lastLogin, etc.
 };
 
@@ -73,6 +94,10 @@ export default function DashboardPage() { // Renamed from Home
     const [isShadowArmyOpen, setIsShadowArmyOpen] = useState(false);
     const [showLevelUp, setShowLevelUp] = useState(false);
     const [levelUpDetails, setLevelUpDetails] = useState({ level: 0, rewards: { statPoints: 0, maxHp: 0, unlocks: [] } });
+
+    // Wearable device states
+    const [wearableIntegration, setWearableIntegration] = useState(null);
+    const [isWearableModalOpen, setIsWearableModalOpen] = useState(false);
 
     // --- Local state for skills/shadows definitions (Could move to data/skills.js, data/shadows.js) ---
     // TODO: The 'unlocked'/'equipped' status here is just for display structure.
@@ -125,6 +150,19 @@ export default function DashboardPage() { // Renamed from Home
         console.log("User authenticated, setting up Firestore listener for UID:", user.uid);
         setLocalLoading(true); // Start loading Firestore data
         const userDocRef = doc(db, "users", user.uid);
+
+        // Initialize wearable integration
+        const initWearable = async () => {
+            try {
+                const wearableInstance = await WearableIntegration.initialize(user.uid);
+                setWearableIntegration(wearableInstance);
+                console.log("Wearable integration initialized:", wearableInstance.isConnected ? "Connected" : "Not connected");
+            } catch (error) {
+                console.error("Error initializing wearable integration:", error);
+            }
+        };
+
+        initWearable();
 
         const unsubscribe = onSnapshot(userDocRef, (docSnap) => {
             if (docSnap.exists()) {
@@ -598,9 +636,7 @@ export default function DashboardPage() { // Renamed from Home
 
 
     const handleStartWorkout = useCallback((workout) => {
-        // TODO: Implement actual workout tracking logic
-        // - Persist activeWorkout in Firestore?
-        // - Start timer? Use Cloud Function for completion?
+        // Standard workout without wearable tracking
         setActiveWorkout(workout); // Set local state for UI feedback
         setIsWorkoutModalOpen(false);
         showSystemMessage(`Entering ${workout.name || 'Random'} gate... Good luck!`, 5000);
@@ -618,7 +654,26 @@ export default function DashboardPage() { // Renamed from Home
                 if (currentActiveWorkout?.name === workout.name) {
                     showSystemMessage(`${workout.name || 'Random'} gate cleared!`, 5000);
                     handleGainExp(expGain); // Grant EXP using the handler
-                    // TODO: Update workout history, track completions for quests/unlocks in Firestore
+
+                    // Update workout history in Firestore
+                    const userDocRef = doc(db, "users", user.uid);
+                    const workoutHistory = {
+                        id: `workout_${Date.now()}`,
+                        name: workout.name,
+                        type: workout.isRandom ? 'random' : (workout.isCustom ? 'custom' : 'standard'),
+                        difficulty: workout.difficulty || 'easy',
+                        duration: workout.duration || '10-15',
+                        expGained: expGain,
+                        completedAt: serverTimestamp()
+                    };
+
+                    // Add to workout history array
+                    updateDoc(userDocRef, {
+                        workoutHistory: [...(stats.workoutHistory || []), workoutHistory]
+                    }).catch(error => {
+                        console.error("Error updating workout history:", error);
+                    });
+
                     return null; // Clear active workout
                 }
                 return currentActiveWorkout; // No change if not the expected workout
@@ -630,7 +685,132 @@ export default function DashboardPage() { // Renamed from Home
         // (Could store timer ref if more complex cancellation is needed)
         // return () => clearTimeout(workoutTimer); // Need to manage this if required
 
-    }, [showSystemMessage, handleGainExp]); // Dependencies
+    }, [showSystemMessage, handleGainExp, user, stats]); // Dependencies
+
+    // Handle workout with wearable device tracking
+    const handleStartTrackedWorkout = useCallback(async (workout) => {
+        if (!wearableIntegration || !wearableIntegration.isConnected) {
+            showSystemMessage("No wearable device connected. Using standard tracking instead.", 5000);
+            handleStartWorkout(workout);
+            return;
+        }
+
+        setActiveWorkout(workout); // Set local state for UI feedback
+        setIsWorkoutModalOpen(false);
+        showSystemMessage(`Starting tracked workout: ${workout.name}. Your wearable device will track your progress.`, 5000);
+
+        try {
+            // Start workout tracking with wearable device
+            const result = await wearableIntegration.startWorkoutTracking(workout);
+
+            if (!result.success) {
+                throw new Error(result.error || "Failed to start workout tracking");
+            }
+
+            // Show success message
+            showSystemMessage(`Workout tracking started. Complete your workout and return to end tracking.`, 5000);
+
+        } catch (error) {
+            console.error("Error starting tracked workout:", error);
+            showSystemMessage(`Error starting workout tracking: ${error.message}. Using standard tracking instead.`, 5000);
+
+            // Fall back to standard workout
+            handleStartWorkout(workout);
+        }
+    }, [wearableIntegration, handleStartWorkout, showSystemMessage]);
+
+    // Handle ending a tracked workout
+    const handleEndTrackedWorkout = useCallback(async () => {
+        if (!wearableIntegration || !wearableIntegration.currentWorkout) {
+            showSystemMessage("No active tracked workout to end.", 3000);
+            return;
+        }
+
+        try {
+            // End workout tracking with wearable device
+            const result = await wearableIntegration.endWorkoutTracking();
+
+            if (!result.success) {
+                throw new Error(result.error || "Failed to end workout tracking");
+            }
+
+            // Show success message
+            showSystemMessage(`Workout completed! Gained ${result.expGained} experience points.`, 5000);
+
+            // Grant experience points
+            handleGainExp(result.expGained);
+
+            // Clear active workout
+            setActiveWorkout(null);
+
+        } catch (error) {
+            console.error("Error ending tracked workout:", error);
+            showSystemMessage(`Error ending workout tracking: ${error.message}`, 5000);
+        }
+    }, [wearableIntegration, handleGainExp, showSystemMessage]);
+
+    // Handle wearable device connection
+    const handleConnectWearable = useCallback(async (platformId) => {
+        if (!wearableIntegration) {
+            return { success: false, message: "Wearable integration not initialized" };
+        }
+
+        try {
+            const result = await wearableIntegration.connectToPlatform(platformId);
+
+            if (result.success) {
+                showSystemMessage(`Successfully connected to ${result.platform} device!`, 5000);
+            }
+
+            return result;
+        } catch (error) {
+            console.error("Error connecting to wearable device:", error);
+            showSystemMessage(`Error connecting to wearable device: ${error.message}`, 5000);
+            return { success: false, error: error.message };
+        }
+    }, [wearableIntegration, showSystemMessage]);
+
+    // Handle wearable device disconnection
+    const handleDisconnectWearable = useCallback(async () => {
+        if (!wearableIntegration) {
+            return { success: false, message: "Wearable integration not initialized" };
+        }
+
+        try {
+            const result = await wearableIntegration.disconnect();
+
+            if (result.success) {
+                showSystemMessage("Disconnected from wearable device.", 3000);
+            }
+
+            return result;
+        } catch (error) {
+            console.error("Error disconnecting from wearable device:", error);
+            showSystemMessage(`Error disconnecting from wearable device: ${error.message}`, 5000);
+            return { success: false, error: error.message };
+        }
+    }, [wearableIntegration, showSystemMessage]);
+
+    // Handle updating wearable settings
+    const handleUpdateWearableSettings = useCallback(async (newSettings) => {
+        if (!wearableIntegration) {
+            return { success: false, message: "Wearable integration not initialized" };
+        }
+
+        try {
+            const result = await wearableIntegration.updateSettings(newSettings);
+
+            if (result.success) {
+                showSystemMessage("Wearable settings updated.", 3000);
+            }
+
+            return result;
+        } catch (error) {
+            console.error("Error updating wearable settings:", error);
+            showSystemMessage(`Error updating wearable settings: ${error.message}`, 5000);
+            return { success: false, error: error.message };
+        }
+    }, [wearableIntegration, showSystemMessage]);
 
 
     const handleActivateSkill = useCallback((skill) => {
@@ -868,6 +1048,14 @@ export default function DashboardPage() { // Renamed from Home
                                             Clearing: {activeWorkout.name}
                                         </p>
                                     )}
+                                    {wearableIntegration?.isConnected && (
+                                        <div className="mt-2 flex items-center justify-center">
+                                            <span className="bg-green-900/30 text-green-300 text-xs px-2 py-0.5 rounded-full flex items-center">
+                                                <span className="w-2 h-2 bg-green-400 rounded-full mr-1"></span>
+                                                Smartwatch Ready
+                                            </span>
+                                        </div>
+                                    )}
                                 </StatCard>
                             </div>
                         </div>
@@ -880,6 +1068,35 @@ export default function DashboardPage() { // Renamed from Home
                         currentUsername={stats.username} // Pass username fetched from stats
                     />
                 </main>
+
+                {/* Wearable Device Button */}
+                <div className="fixed bottom-4 right-4 z-[100]">
+                    <button
+                        onClick={() => setIsWearableModalOpen(true)}
+                        className={`p-3 rounded-full shadow-lg ${wearableIntegration?.isConnected ? 'bg-green-600 hover:bg-green-700' : 'bg-purple-600 hover:bg-purple-700'} text-white transition-colors`}
+                        title="Connect Smartwatch"
+                    >
+                        <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
+                        </svg>
+                    </button>
+                </div>
+
+                {/* End Tracked Workout Button (only shown when there's an active tracked workout) */}
+                {wearableIntegration?.currentWorkout && (
+                    <div className="fixed bottom-4 left-1/2 transform -translate-x-1/2 z-[100]">
+                        <button
+                            onClick={handleEndTrackedWorkout}
+                            className="px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-full shadow-lg flex items-center space-x-2 animate-pulse"
+                        >
+                            <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 10a1 1 0 011-1h4a1 1 0 011 1v4a1 1 0 01-1 1h-4a1 1 0 01-1-1v-4z" />
+                            </svg>
+                            <span>End Workout</span>
+                        </button>
+                    </div>
+                )}
             </div>
 
              {/* Test EXP Button - Only in Development */}
@@ -904,6 +1121,16 @@ export default function DashboardPage() { // Renamed from Home
                 onClose={() => setIsWorkoutModalOpen(false)}
                 workouts={stats.availableWorkouts || []} // Pass workouts from stats
                 onStartWorkout={handleStartWorkout}
+                wearableConnected={wearableIntegration?.isConnected}
+                onStartTrackedWorkout={handleStartTrackedWorkout}
+            />
+            <WearableModal
+                isOpen={isWearableModalOpen}
+                onClose={() => setIsWearableModalOpen(false)}
+                wearableIntegration={wearableIntegration}
+                onConnect={handleConnectWearable}
+                onDisconnect={handleDisconnectWearable}
+                onUpdateSettings={handleUpdateWearableSettings}
             />
             <SystemMessage message={systemMessage} />
             <SkillsModal

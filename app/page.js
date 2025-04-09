@@ -659,7 +659,7 @@ export default function DashboardPage() { // Renamed from Home
 
                     // Update workout history in Firestore
                     const userDocRef = doc(db, "users", user.uid);
-                    const workoutHistory = {
+                    const workoutHistoryEntry = { // Renamed variable to avoid conflict
                         id: `workout_${Date.now()}`,
                         name: workout.name,
                         type: workout.isRandom ? 'random' : (workout.isCustom ? 'custom' : 'standard'),
@@ -671,7 +671,7 @@ export default function DashboardPage() { // Renamed from Home
 
                     // Add to workout history array
                     updateDoc(userDocRef, {
-                        workoutHistory: [...(stats.workoutHistory || []), workoutHistory]
+                        workoutHistory: [...(stats.workoutHistory || []), workoutHistoryEntry] // Use renamed variable
                     }).catch(error => {
                         console.error("Error updating workout history:", error);
                     });
@@ -999,7 +999,8 @@ export default function DashboardPage() { // Renamed from Home
                 {/* Header */}
                 <header className="flex justify-between items-center mb-6 sm:mb-10 flex-wrap gap-y-2">
                     <h1 className="text-xl sm:text-2xl font-bold text-blue-300 tracking-wide">
-                        {stats.hunterName || 'Hunter'}'s Dashboard
+                        {/* ***** FIX APPLIED HERE ***** */}
+                        {`${stats.hunterName || 'Hunter'}'s Dashboard`}
                     </h1>
                     <div className="flex items-center gap-2 sm:gap-3 flex-wrap">
                         <button onClick={() => setIsShadowArmyOpen(true)} className="text-xs sm:text-sm text-purple-400 hover:text-purple-300 transition-colors font-medium px-2 py-1 hover:bg-purple-900/30 rounded">Shadows</button>

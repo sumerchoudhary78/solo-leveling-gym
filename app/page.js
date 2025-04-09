@@ -18,7 +18,8 @@ import {
     limit, // Keep for chat
     writeBatch, // Keep for quest completion
     deleteField, // Potentially useful for removing quest data on abandon
-    getDoc
+    getDoc,
+    setDoc // Add setDoc for creating new user documents
 } from "@firebase/firestore";
 import { auth,db } from '../lib/firebase/config';
 import { masterQuestDefinitions } from '../data/quests'; // Import quest definitions
@@ -37,6 +38,7 @@ import QuestLogModal from './components/modals/QuestLogModal';
 import ShadowArmyModal from './components/modals/ShadowArmyModal';
 import LevelUpModal from './components/modals/LevelUpModal';
 import WearableModal from './components/modals/WearableModal';
+import ProfilePhotoButton from './components/dashboard/ProfilePhotoButton';
 
 // Default structure for a new user's stats
 const defaultUserStats = {
@@ -971,6 +973,29 @@ export default function DashboardPage() { // Renamed from Home
     return (
         <>
             <div className="min-h-screen bg-[#101827] text-gray-100 font-sans p-4 sm:p-8">
+                {/* Profile Photo Notification - Only show if user has no avatar */}
+                {!stats.avatarUrl && (
+                    <div className="mb-6 bg-orange-900/30 border-2 border-orange-500 rounded-lg p-4 flex items-center justify-between animate-pulse">
+                        <div className="flex items-center">
+                            <div className="bg-orange-600 rounded-full p-2 mr-3">
+                                <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5.121 17.804A13.937 13.937 0 0112 16c2.5 0 4.847.655 6.879 1.804M15 10a3 3 0 11-6 0 3 3 0 016 0zm6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+                                </svg>
+                            </div>
+                            <div>
+                                <h3 className="text-orange-300 font-bold mb-1">⚠️ Profile Photo Missing!</h3>
+                                <p className="text-gray-300 text-sm">Upload a profile photo to personalize your hunter avatar and show off your rank frame!</p>
+                            </div>
+                        </div>
+                        <Link href="/profile/edit" className="bg-orange-600 hover:bg-orange-700 text-white px-4 py-2 rounded-md text-sm font-medium transition-colors whitespace-nowrap ml-4 flex items-center">
+                            <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 mr-1" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0l-4 4m4-4v12" />
+                            </svg>
+                            Upload Photo Now
+                        </Link>
+                    </div>
+                )}
+
                 {/* Header */}
                 <header className="flex justify-between items-center mb-6 sm:mb-10 flex-wrap gap-y-2">
                     <h1 className="text-xl sm:text-2xl font-bold text-blue-300 tracking-wide">
@@ -980,7 +1005,14 @@ export default function DashboardPage() { // Renamed from Home
                         <button onClick={() => setIsShadowArmyOpen(true)} className="text-xs sm:text-sm text-purple-400 hover:text-purple-300 transition-colors font-medium px-2 py-1 hover:bg-purple-900/30 rounded">Shadows</button>
                         <button onClick={() => setIsQuestLogOpen(true)} className="text-xs sm:text-sm text-green-400 hover:text-green-300 transition-colors font-medium px-2 py-1 hover:bg-green-900/30 rounded">Quests</button>
                         <button onClick={() => setIsSkillsModalOpen(true)} className="text-xs sm:text-sm text-yellow-400 hover:text-yellow-300 transition-colors font-medium px-2 py-1 hover:bg-yellow-900/30 rounded">Skills</button>
+                        <Link href="/gym-plan" className="text-xs sm:text-sm text-cyan-400 hover:text-cyan-300 transition-colors font-medium px-2 py-1 hover:bg-cyan-900/30 rounded">Gym Plan</Link>
                         <Link href="/leaderboard" className="text-xs sm:text-sm text-blue-400 hover:text-blue-300 transition-colors font-medium px-2 py-1 hover:bg-blue-900/30 rounded">Rankings</Link>
+                        <Link href="/profile/edit" className="text-xs sm:text-sm text-orange-400 hover:text-orange-300 transition-colors font-medium px-2 py-1 hover:bg-orange-900/30 rounded flex items-center">
+                            <svg xmlns="http://www.w3.org/2000/svg" className="h-3 w-3 mr-1" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
+                            </svg>
+                            Profile
+                        </Link>
                         <span className="text-sm text-gray-500 hidden sm:inline mx-1">|</span>
                         <span className="text-xs sm:text-sm text-gray-300" title={user.email || 'No email'}>@{stats.username || '...'}</span>
                         <button onClick={handleLogout} className="bg-gradient-to-r from-red-600 to-red-800 hover:from-red-700 hover:to-red-900 text-white font-semibold rounded-md text-xs sm:text-sm px-3 py-1.5 transition-all shadow-md hover:shadow-lg">
@@ -1081,6 +1113,9 @@ export default function DashboardPage() { // Renamed from Home
                         </svg>
                     </button>
                 </div>
+
+                {/* Profile Photo Upload Button */}
+                <ProfilePhotoButton avatarUrl={stats?.avatarUrl} />
 
                 {/* End Tracked Workout Button (only shown when there's an active tracked workout) */}
                 {wearableIntegration?.currentWorkout && (

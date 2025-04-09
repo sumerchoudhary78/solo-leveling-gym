@@ -31,10 +31,13 @@ const HunterRank = ({ level }) => {
     rankColor = "text-blue-400";
   }
 
+
+
   return (
     <div className="flex flex-col items-center">
       <span className="text-sm uppercase text-gray-400 tracking-wider mb-1 font-semibold">Hunter Rank</span>
-      <span className={`text-4xl font-bold ${rankColor}`}>{rank}</span>
+
+      <span className={`text-4xl font-bold ${rankColor} animate-pulse-slow`}>{rank}</span>
     </div>
   );
 };

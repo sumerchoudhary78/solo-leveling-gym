@@ -1,0 +1,30 @@
+{
+  "project_info": {
+    "project_number": "995401456959",
+    "firebase_url": "https://solo-leveling-gym-default-rtdb.firebaseio.com",
+    "project_id": "solo-leveling-gym",
+    "storage_bucket": "solo-leveling-gym.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:995401456959:android:f1378734101f9f6ff6c78a",
+        "android_client_info": {
+          "package_name": "com.example.solo_leveling_gym"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDgJlxPRvLMHpLKpFrLIzU95GovcZ0dt_Y"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

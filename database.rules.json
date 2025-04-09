@@ -1,0 +1,7 @@
+{
+  "rules": {
+    // Default rule - deny if not explicitly allowed
+    ".read": false,
+    ".write": false
+  }
+}

@@ -1,16 +1,21 @@
 // src/components/dashboard/EnhancedHunterProfile.jsx
 'use client';
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import Link from 'next/link';
 import PlayerAvatarFrame from '@/components/three/PlayerAvatarFrame';
+import { ref, get, child } from 'firebase/database';
+import { rtdb } from '@/lib/firebase/config';
 
 const EnhancedHunterProfile = ({ hunter }) => {
   const [showDetails, setShowDetails] = useState(false);
-  
+
   // If hunter data is not provided
   if (!hunter) return null;
-  
+
+  // State for the actual avatar URL (could be from Realtime DB)
+  const [actualAvatarUrl, setActualAvatarUrl] = useState(null);
+
   // Destructure hunter data with defaults
   const {
     id,
@@ -20,11 +25,38 @@ const EnhancedHunterProfile = ({ hunter }) => {
     nextLevelExp = 100,
     missions = [],
     avatarUrl = null,
+    rtdbAvatarRef = null, // Reference to image in Realtime Database
     stats = { strength: 0, agility: 0, intelligence: 0, vitality: 0 },
     joinDate = 'Unknown',
     huntsCompleted = 0
   } = hunter;
-  
+
+  // Fetch image from Realtime Database if reference exists
+  useEffect(() => {
+    const fetchImageFromRealtimeDb = async () => {
+      if (rtdbAvatarRef) {
+        try {
+          const dbRef = ref(rtdb);
+          const snapshot = await get(child(dbRef, `${rtdbAvatarRef}/data`));
+
+          if (snapshot.exists()) {
+            setActualAvatarUrl(snapshot.val());
+          } else {
+            console.log('No image found in Realtime Database');
+            setActualAvatarUrl(avatarUrl); // Fallback to avatarUrl
+          }
+        } catch (error) {
+          console.error('Error fetching image from Realtime Database:', error);
+          setActualAvatarUrl(avatarUrl); // Fallback to avatarUrl
+        }
+      } else {
+        setActualAvatarUrl(avatarUrl); // Use avatarUrl if no rtdbAvatarRef
+      }
+    };
+
+    fetchImageFromRealtimeDb();
+  }, [rtdbAvatarRef, avatarUrl]);
+
   // Calculate rank
   const getRank = () => {
     if (level >= 50) return { name: "Special Authority", color: "text-purple-300", bgColor: "bg-purple-900/20" };
@@ -36,12 +68,12 @@ const EnhancedHunterProfile = ({ hunter }) => {
     if (level >= 10) return { name: "D", color: "text-blue-400", bgColor: "bg-blue-900/20" };
     return { name: "E", color: "text-gray-400", bgColor: "bg-gray-900/20" };
   };
-  
+
   const rank = getRank();
-  
+
   // Calculate exp percentage
   const expPercentage = Math.min(100, Math.round((exp / nextLevelExp) * 100));
-  
+
   return (
     <div className="bg-[#1f2a40] rounded-lg shadow-xl overflow-hidden transition-all duration-300 hover:shadow-2xl">
       {/* Header with name and rank */}
@@ -51,19 +83,19 @@ const EnhancedHunterProfile = ({ hunter }) => {
           <span className={`font-bold ${rank.color}`}>Rank {rank.name}</span>
         </div>
       </div>
-      
+
       {/* Main profile content */}
       <div className="p-5">
         <div className="flex flex-col md:flex-row">
           {/* Avatar with Three.js frame */}
           <div className="flex-shrink-0 flex justify-center mb-4 md:mb-0 md:mr-6">
-            <PlayerAvatarFrame 
-              rank={level} 
+            <PlayerAvatarFrame
+              rank={level}
               size={120}
-              imageUrl={avatarUrl} 
+              imageUrl={actualAvatarUrl || avatarUrl}
             />
           </div>
-          
+
           {/* Basic stats */}
           <div className="flex-grow">
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -72,8 +104,8 @@ const EnhancedHunterProfile = ({ hunter }) => {
                 <div className="text-2xl font-bold text-blue-300">{level}</div>
                 {/* EXP Progress bar */}
                 <div className="mt-2 h-2 bg-gray-700 rounded-full overflow-hidden">
-                  <div 
-                    className="h-full bg-gradient-to-r from-blue-400 to-blue-600" 
+                  <div
+                    className="h-full bg-gradient-to-r from-blue-400 to-blue-600"
                     style={{ width: `${expPercentage}%` }}
                   ></div>
                 </div>
@@ -81,73 +113,85 @@ const EnhancedHunterProfile = ({ hunter }) => {
                   {exp} / {nextLevelExp} EXP ({expPercentage}%)
                 </div>
               </div>
-              
+
               <div className="bg-[#2a3a5a] p-3 rounded-lg">
                 <div className="text-sm text-gray-400 mb-1">Missions Completed</div>
                 <div className="text-2xl font-bold text-green-400">{huntsCompleted}</div>
                 <div className="mt-2 text-xs text-gray-400">Hunter since {joinDate}</div>
+                <div className="mt-2 text-xs text-gray-400 flex items-center">
+                  <span className="mr-1">Element:</span>
+                  <span className={`${rank.color} font-semibold`}>
+                    {level >= 50 ? 'Cosmic Energy' :
+                     level >= 40 ? 'Lightning' :
+                     level >= 30 ? 'Fire' :
+                     level >= 25 ? 'Wind' :
+                     level >= 20 ? 'Earth' :
+                     level >= 15 ? 'Water' :
+                     level >= 10 ? 'Ice' : 'Shadow'}
+                  </span>
+                </div>
               </div>
             </div>
-            
+
             {/* Stats Section */}
             <div className="mt-4 bg-[#2a3a5a] p-3 rounded-lg">
               <div className="flex justify-between items-center mb-2">
                 <div className="text-sm font-medium text-blue-300">Hunter Stats</div>
-                <button 
+                <button
                   onClick={() => setShowDetails(!showDetails)}
                   className="text-xs text-gray-400 hover:text-white transition-colors"
                 >
                   {showDetails ? 'Hide Details' : 'Show Details'}
                 </button>
               </div>
-              
+
               {showDetails && (
                 <div className="grid grid-cols-2 gap-y-2 gap-x-4 mt-2">
                   <div className="flex flex-col">
                     <div className="text-xs text-gray-400">Strength</div>
                     <div className="flex items-center">
                       <div className="h-1.5 flex-grow bg-gray-700 rounded-full overflow-hidden">
-                        <div 
-                          className="h-full bg-red-500" 
+                        <div
+                          className="h-full bg-red-500"
                           style={{ width: `${Math.min(100, stats.strength * 5)}%` }}
                         ></div>
                       </div>
                       <span className="ml-2 text-xs text-white">{stats.strength}</span>
                     </div>
                   </div>
-                  
+
                   <div className="flex flex-col">
                     <div className="text-xs text-gray-400">Agility</div>
                     <div className="flex items-center">
                       <div className="h-1.5 flex-grow bg-gray-700 rounded-full overflow-hidden">
-                        <div 
-                          className="h-full bg-green-500" 
+                        <div
+                          className="h-full bg-green-500"
                           style={{ width: `${Math.min(100, stats.agility * 5)}%` }}
                         ></div>
                       </div>
                       <span className="ml-2 text-xs text-white">{stats.agility}</span>
                     </div>
                   </div>
-                  
+
                   <div className="flex flex-col">
                     <div className="text-xs text-gray-400">Intelligence</div>
                     <div className="flex items-center">
                       <div className="h-1.5 flex-grow bg-gray-700 rounded-full overflow-hidden">
-                        <div 
-                          className="h-full bg-blue-500" 
+                        <div
+                          className="h-full bg-blue-500"
                           style={{ width: `${Math.min(100, stats.intelligence * 5)}%` }}
                         ></div>
                       </div>
                       <span className="ml-2 text-xs text-white">{stats.intelligence}</span>
                     </div>
                   </div>
-                  
+
                   <div className="flex flex-col">
                     <div className="text-xs text-gray-400">Vitality</div>
                     <div className="flex items-center">
                       <div className="h-1.5 flex-grow bg-gray-700 rounded-full overflow-hidden">
-                        <div 
-                          className="h-full bg-purple-500" 
+                        <div
+                          className="h-full bg-purple-500"
                           style={{ width: `${Math.min(100, stats.vitality * 5)}%` }}
                         ></div>
                       </div>
@@ -156,7 +200,7 @@ const EnhancedHunterProfile = ({ hunter }) => {
                   </div>
                 </div>
               )}
-              
+
               {!showDetails && (
                 <div className="grid grid-cols-4 gap-2">
                   <div className="text-center">
@@ -180,7 +224,7 @@ const EnhancedHunterProfile = ({ hunter }) => {
             </div>
           </div>
         </div>
-        
+
         {/* Action buttons */}
         <div className="mt-6 flex flex-wrap gap-2">
           <Link href="/missions" className="flex-1 py-2 px-4 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-md text-center transition-colors">
@@ -189,14 +233,14 @@ const EnhancedHunterProfile = ({ hunter }) => {
           <Link href="/leaderboard" className="flex-1 py-2 px-4 bg-indigo-600 hover:bg-indigo-700 text-white font-medium rounded-md text-center transition-colors">
             View Rankings
           </Link>
-          <button 
-            onClick={() => window.location.href='/profile/edit'} 
+          <Link
+            href="/profile/edit"
             className="flex-1 py-2 px-4 bg-gray-700 hover:bg-gray-600 text-white font-medium rounded-md text-center transition-colors"
           >
             Edit Profile
-          </button>
+          </Link>
         </div>
-        
+
         {/* Recent activity or achievements */}
         {missions && missions.length > 0 && (
           <div className="mt-6">
@@ -207,8 +251,8 @@ const EnhancedHunterProfile = ({ hunter }) => {
                   <li key={index} className="flex justify-between items-center">
                     <span className="text-sm text-white">{mission.title}</span>
                     <span className={`text-xs px-2 py-0.5 rounded-full ${
-                      mission.completed 
-                        ? 'bg-green-900/40 text-green-400' 
+                      mission.completed
+                        ? 'bg-green-900/40 text-green-400'
                         : 'bg-yellow-900/40 text-yellow-400'
                     }`}>
                       {mission.completed ? 'Completed' : 'In Progress'}
@@ -224,7 +268,7 @@ const EnhancedHunterProfile = ({ hunter }) => {
             </div>
           </div>
         )}
-        
+
         {/* Visual rank effects */}
         {rank.name === 'S' || rank.name === 'National Level' || rank.name === 'Special Authority' ? (
           <div className="mt-4 p-3 bg-gradient-to-r from-indigo-900/30 to-purple-900/30 rounded-lg border border-blue-500/20">

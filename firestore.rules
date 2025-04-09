@@ -5,52 +5,77 @@ service cloud.firestore {
     match /usernames/{username} {
       // Anyone can check if a username exists
       allow read: if true;
-      
+
       // Only authenticated users can claim a username
       // and only if that username document doesn't exist yet
-      allow create: if request.auth != null && 
+      allow create: if request.auth != null &&
                    !exists(/databases/$(database)/documents/usernames/$(username));
-                   
+
       // No updates or deletes allowed
       allow update, delete: if false;
     }
-    
+
     // Rules for the users collection
     match /users/{userId} {
       // Allow users to read their own full document
       allow read: if request.auth != null && request.auth.uid == userId;
-      
+
       // Allow creating user document on signup
       allow create: if request.auth != null && request.auth.uid == userId;
-      
+
       // Allow users to update only their own documents
       allow update: if request.auth != null && request.auth.uid == userId;
-      
+
+      // Specifically allow avatar updates with larger data
+      allow update: if request.auth != null && 
+                   request.auth.uid == userId && 
+                   request.resource.data.keys().hasAny(['avatarUrl', 'avatarUploadMethod', 'lastUpdated']);
+                   
+      // Allow storing images directly in Firestore
+      // This rule allows documents up to 1MB in size for avatar data
+      allow update: if request.auth != null && 
+                   request.auth.uid == userId && 
+                   request.resource.data.keys().hasAny(['avatarUrl']) && 
+                   request.resource.data.avatarUrl.size() <= 1048576;
+
       // Disallow deleting user documents
       allow delete: if false;
+
+      // Allow access to subcollections
+      match /workouts/{workoutId} {
+        allow read, write: if request.auth != null && request.auth.uid == userId;
+      }
     }
-    
+
     // Rules for leaderboard & chat profile reading
     match /users/{userId} {
       // Allow reading other users' public profile data
       allow read: if request.auth != null;
     }
-    
+
     // Rules for messages
     match /messages/{messageId} {
       // Allow reading messages if authenticated
       allow read: if request.auth != null;
-      
+
       // Allow creating messages if authenticated and userId matches
-      allow create: if request.auth != null && 
+      allow create: if request.auth != null &&
                    request.resource.data.userId == request.auth.uid;
-                   
+
       // Disallow updating messages
       allow update: if false;
-      
+
       // Allow deleting only your own messages
-      allow delete: if request.auth != null && 
+      allow delete: if request.auth != null &&
                    resource.data.userId == request.auth.uid;
     }
+
+    // Rules for quests
+    match /quests/{questId} {
+      allow read: if request.auth != null;
+      allow write: if request.auth != null &&
+                   (request.resource.data.userId == request.auth.uid ||
+                    resource.data.userId == request.auth.uid);
+    }
   }
-} 
+}
